@@ -2,7 +2,8 @@ import json
 import logging
 import xmlrpc.client
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, Literal
+from typing import AsyncIterator, Dict, Any, Literal, Optional
+from dataclasses import dataclass, field
 
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import TextContent, ImageContent
@@ -17,6 +18,12 @@ logger = logging.getLogger("FreeCADMCPserver")
 _only_text_feedback = False
 
 
+@dataclass
+class ObjectDTO:
+    name: str
+    type: str
+    properties: dict = field(default_factory=dict)
+
 class FreeCADConnection:
     def __init__(self, host: str = "localhost", port: int = 9875):
         self.server = xmlrpc.client.ServerProxy(f"http://{host}:{port}", allow_none=True)
@@ -25,18 +32,36 @@ class FreeCADConnection:
         return self.server.ping()
 
     def create_document(self, name: str) -> dict[str, Any]:
+        if not isinstance(name, str) or not name:
+            raise ValueError("Nome do documento deve ser uma string não vazia.")
         return self.server.create_document(name)
 
     def create_object(self, doc_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(doc_name, str) or not doc_name:
+            raise ValueError("Nome do documento deve ser uma string não vazia.")
+        if not isinstance(obj_data, dict):
+            raise ValueError("Dados do objeto devem ser um dicionário.")
         return self.server.create_object(doc_name, obj_data)
 
     def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(doc_name, str) or not doc_name:
+            raise ValueError("Nome do documento deve ser uma string não vazia.")
+        if not isinstance(obj_name, str) or not obj_name:
+            raise ValueError("Nome do objeto deve ser uma string não vazia.")
+        if not isinstance(obj_data, dict):
+            raise ValueError("Propriedades devem ser um dicionário.")
         return self.server.edit_object(doc_name, obj_name, obj_data)
 
     def delete_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
+        if not isinstance(doc_name, str) or not doc_name:
+            raise ValueError("Nome do documento deve ser uma string não vazia.")
+        if not isinstance(obj_name, str) or not obj_name:
+            raise ValueError("Nome do objeto deve ser uma string não vazia.")
         return self.server.delete_object(doc_name, obj_name)
 
     def insert_part_from_library(self, relative_path: str) -> dict[str, Any]:
+        if not isinstance(relative_path, str) or not relative_path:
+            raise ValueError("Caminho relativo deve ser uma string não vazia.")
         return self.server.insert_part_from_library(relative_path)
 
     def execute_code(self, code: str) -> dict[str, Any]:

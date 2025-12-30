@@ -2,6 +2,7 @@ import FreeCAD
 import FreeCADGui
 import ObjectsFem
 
+
 import contextlib
 import queue
 import base64
@@ -9,6 +10,41 @@ import io
 import os
 import tempfile
 import threading
+import logging
+import time
+    _metrics = {
+        'requests_total': 0,
+        'errors_total': 0,
+        'request_durations': [],
+    }
+
+    def _track_metrics(self, method_name):
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                start = time.time()
+                FreeCADRPC._metrics['requests_total'] += 1
+                try:
+                    result = func(*args, **kwargs)
+                except Exception as e:
+                    FreeCADRPC._metrics['errors_total'] += 1
+                    logging.error(f"Erro em {method_name}: {e}", exc_info=True)
+                    raise
+                finally:
+                    duration = time.time() - start
+                    FreeCADRPC._metrics['request_durations'].append(duration)
+                    logging.info(f"Método {method_name} executado em {duration:.4f}s")
+                return result
+            return wrapper
+        return decorator
+
+    @staticmethod
+    def get_metrics():
+        """Retorna métricas básicas do servidor RPC."""
+        return {
+            'requests_total': FreeCADRPC._metrics['requests_total'],
+            'errors_total': FreeCADRPC._metrics['errors_total'],
+            'avg_duration': (sum(FreeCADRPC._metrics['request_durations']) / len(FreeCADRPC._metrics['request_durations']) if FreeCADRPC._metrics['request_durations'] else 0),
+        }
 from dataclasses import dataclass, field
 from typing import Any
 from xmlrpc.server import SimpleXMLRPCServer
@@ -124,9 +160,11 @@ def set_object_property(
 class FreeCADRPC:
     """RPC server for FreeCAD"""
 
+    @_track_metrics('ping')
     def ping(self):
         return True
 
+    @_track_metrics('create_document')
     def create_document(self, name="New_Document"):
         rpc_request_queue.put(lambda: self._create_document_gui(name))
         res = rpc_response_queue.get()
@@ -135,6 +173,7 @@ class FreeCADRPC:
         else:
             return {"success": False, "error": res}
 
+    @_track_metrics('create_object')
     def create_object(self, doc_name, obj_data: dict[str, Any]):
         obj = Object(
             name=obj_data.get("Name", "New_Object"),
@@ -149,6 +188,7 @@ class FreeCADRPC:
         else:
             return {"success": False, "error": res}
 
+    @_track_metrics('edit_object')
     def edit_object(self, doc_name: str, obj_name: str, properties: dict[str, Any]) -> dict[str, Any]:
         obj = Object(
             name=obj_name,
@@ -161,6 +201,7 @@ class FreeCADRPC:
         else:
             return {"success": False, "error": res}
 
+    @_track_metrics('delete_object')
     def delete_object(self, doc_name: str, obj_name: str):
         rpc_request_queue.put(lambda: self._delete_object_gui(doc_name, obj_name))
         res = rpc_response_queue.get()
@@ -169,6 +210,7 @@ class FreeCADRPC:
         else:
             return {"success": False, "error": res}
 
+    @_track_metrics('execute_code')
     def execute_code(self, code: str) -> dict[str, Any]:
         output_buffer = io.StringIO()
         def task():
@@ -193,6 +235,7 @@ class FreeCADRPC:
         else:
             return {"success": False, "error": res}
 
+    @_track_metrics('get_objects')
     def get_objects(self, doc_name):
         doc = FreeCAD.getDocument(doc_name)
         if doc:
@@ -200,6 +243,7 @@ class FreeCADRPC:
         else:
             return []
 
+    @_track_metrics('get_object')
     def get_object(self, doc_name, obj_name):
         doc = FreeCAD.getDocument(doc_name)
         if doc:
@@ -207,6 +251,7 @@ class FreeCADRPC:
         else:
             return None
 
+    @_track_metrics('insert_part_from_library')
     def insert_part_from_library(self, relative_path):
         rpc_request_queue.put(lambda: self._insert_part_from_library(relative_path))
         res = rpc_response_queue.get()
@@ -215,12 +260,15 @@ class FreeCADRPC:
         else:
             return {"success": False, "error": res}
 
+    @_track_metrics('list_documents')
     def list_documents(self):
         return list(FreeCAD.listDocuments().keys())
 
+    @_track_metrics('get_parts_list')
     def get_parts_list(self):
         return get_parts_list()
 
+    @_track_metrics('get_active_screenshot')
     def get_active_screenshot(self, view_name: str = "Isometric") -> str:
         """Get a screenshot of the active view.
         
@@ -431,7 +479,10 @@ class FreeCADRPC:
 def start_rpc_server(host="localhost", port=9875):
     global rpc_server_thread, rpc_server_instance
 
+    logging.basicConfig(level=logging.INFO)
+
     if rpc_server_instance:
+        logging.warning("Tentativa de iniciar RPC Server já em execução.")
         return "RPC Server already running."
 
     rpc_server_instance = SimpleXMLRPCServer(
@@ -441,13 +492,18 @@ def start_rpc_server(host="localhost", port=9875):
 
     def server_loop():
         FreeCAD.Console.PrintMessage(f"RPC Server started at {host}:{port}\n")
-        rpc_server_instance.serve_forever()
+        logging.info(f"RPC Server started at {host}:{port}")
+        try:
+            rpc_server_instance.serve_forever()
+        except Exception as e:
+            logging.error(f"Erro no loop do servidor RPC: {e}", exc_info=True)
 
     rpc_server_thread = threading.Thread(target=server_loop, daemon=True)
     rpc_server_thread.start()
 
     QtCore.QTimer.singleShot(500, process_gui_tasks)
 
+    logging.info(f"RPC Server thread iniciada em {host}:{port}")
     return f"RPC Server started at {host}:{port}."
 
 
@@ -455,13 +511,18 @@ def stop_rpc_server():
     global rpc_server_instance, rpc_server_thread
 
     if rpc_server_instance:
-        rpc_server_instance.shutdown()
-        rpc_server_thread.join()
+        try:
+            rpc_server_instance.shutdown()
+            rpc_server_thread.join()
+            logging.info("RPC Server parado com sucesso.")
+        except Exception as e:
+            logging.error(f"Erro ao parar o RPC Server: {e}", exc_info=True)
         rpc_server_instance = None
         rpc_server_thread = None
         FreeCAD.Console.PrintMessage("RPC Server stopped.\n")
         return "RPC Server stopped."
 
+    logging.warning("Tentativa de parar RPC Server que não estava em execução.")
     return "RPC Server was not running."
 
 

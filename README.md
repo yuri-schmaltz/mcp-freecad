@@ -29,14 +29,45 @@ https://claude.ai/share/7b48fd60-68ba-46fb-bb21-2fbb17399b48
 
 ## Install addon
 
-FreeCAD Addon directory is
+FreeCAD Addon directory is:
 * Windows: `%APPDATA%\FreeCAD\Mod\`
 * Mac: `~/Library/Application\ Support/FreeCAD/Mod/`
 * Linux:
-  * Ubuntu: `~/.FreeCAD/Mod/` or `~/snap/freecad/common/Mod/` (if you install FreeCAD from snap)
+  * Ubuntu: `~/.FreeCAD/Mod/` ou `~/snap/freecad/common/Mod/` (se instalar via snap)
   * Debian: `~/.local/share/FreeCAD/Mod`
 
-Please put `addon/FreeCADMCP` directory to the addon directory.
+**Passos para instalação:**
+1. Clone o repositório:
+   ```bash
+   git clone https://github.com/neka-nat/freecad-mcp.git
+   cd freecad-mcp
+   cp -r addon/FreeCADMCP ~/.FreeCAD/Mod/
+   ```
+2. Reinicie o FreeCAD.
+3. Selecione "MCP Addon" na lista de Workbenches.
+4. Inicie o servidor RPC pelo comando "Start RPC Server" na barra de ferramentas "FreeCAD MCP".
+
+## Testes automatizados
+
+Para rodar os testes unitários mínimos:
+
+```bash
+pip install pytest
+pytest tests/
+```
+
+Os testes garantem que o módulo do servidor RPC pode ser importado e que as funções principais existem.
+
+## Troubleshooting e logs
+
+O servidor RPC agora possui logging estruturado (via módulo `logging`).
+* Logs de inicialização, parada e erros são emitidos no console.
+* Para depuração, verifique a saída do terminal ao iniciar/parar o servidor.
+
+Se encontrar problemas:
+* Verifique se as dependências estão instaladas.
+* Consulte os logs para mensagens de erro detalhadas.
+* Execute os testes para garantir integridade básica.
 
 ```bash
 git clone https://github.com/neka-nat/freecad-mcp.git

@@ -195,3 +195,26 @@ The `--host` value is validated on startup — it must be a valid IPv4/IPv6 addr
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
+
+## Guidelines & Logging
+
+This project now integrates directives from `docs/gabarito_ia.pdf` (extracted to `docs/gabarito_ia_extracted.txt`) and enforces them at runtime:
+
+- The application will prefix textual responses with the mandated sentence from the gabarito.
+- Dangerous or "agreement trap" prompts (e.g. requests to bypass safety, or code that calls `os.system`) are detected and refused with constructive guidance.
+- Logging is configurable via the `FREECAD_MCP_LOGLEVEL` environment variable (default `INFO`).
+- Logs are written to console and to `logs/freecad_mcp.log` (rotating file handler).
+
+## Running tests
+
+There is a small test runner which validates the guidelines enforcement and basic operation handlers. Run locally with:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+python -m pip install -r requirements.txt
+python -u tests/run_guidelines_tests.py
+```
+
+CI is configured in `.github/workflows/ci.yml` to run the same tests on push and pull requests (Python 3.12).
+

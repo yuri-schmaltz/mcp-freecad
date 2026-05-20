@@ -1,4 +1,6 @@
 import logging
+import os
+from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Literal
 
@@ -21,12 +23,57 @@ from .operations import (
     run_fem_analysis_operation,
 )
 from .prompt_text import ASSET_CREATION_STRATEGY
+from pathlib import Path
+
+
+def _load_system_directives() -> str:
+    """Load system-level directives from docs/gabarito_ia_extracted.txt if present."""
+    # Use repository root as base (two levels up from this file: src/freecad_mcp)
+    p = Path(__file__).resolve().parents[2] / "docs" / "gabarito_ia_extracted.txt"
+    try:
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    except Exception:
+        # We haven't configured logging yet here; fall back silently
+        pass
+    return "FreeCAD integration through the Model Context Protocol"
+
+
+def configure_logging() -> None:
+    """Configure root logging with console and rotating file handlers."""
+    log_level_name = os.getenv("FREECAD_MCP_LOGLEVEL", "INFO").upper()
+    level = getattr(logging, log_level_name, logging.INFO)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s", "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(level)
+    ch.setFormatter(formatter)
+    root.addHandler(ch)
+
+    # File handler (rotating)
+    try:
+        log_dir = Path(__file__).resolve().parents[2] / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(log_dir / "freecad_mcp.log", maxBytes=5 * 1024 * 1024, backupCount=3)
+        fh.setLevel(level)
+        fh.setFormatter(formatter)
+        root.addHandler(fh)
+    except Exception:
+        # If file handler cannot be created, continue with console only
+        pass
+
+
+configure_logging()
 from .server_state import ServerState
 
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger("FreeCADMCPserver")
 
 state = ServerState()
@@ -53,9 +100,13 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
         logger.info("FreeCADMCP server shut down")
 
 
+mcp_instructions = _load_system_directives()
+if ASSET_CREATION_STRATEGY:
+    mcp_instructions = mcp_instructions + "\n\n" + ASSET_CREATION_STRATEGY
+
 mcp = FastMCP(
     "FreeCADMCP",
-    instructions="FreeCAD integration through the Model Context Protocol",
+    instructions=mcp_instructions,
     lifespan=server_lifespan,
 )
 

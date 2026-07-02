@@ -933,59 +933,77 @@ class FreeCADRPC:
             return str(e)
 
 
+# Lock serialising start/stop. Without it, two callers (e.g. the auto-start
+# QTimer firing concurrently with a manual menu click) can both observe
+# ``rpc_server_instance is None``, build two servers, and leak one of them.
+_rpc_lock = threading.RLock()
+
+
 def start_rpc_server(port=9875):
-    global rpc_server_thread, rpc_server_instance
+    with _rpc_lock:
+        global rpc_server_thread, rpc_server_instance
 
-    if rpc_server_instance:
-        return "RPC Server already running."
+        if rpc_server_instance:
+            return "RPC Server already running."
 
-    settings = load_settings()
-    remote_enabled = settings.get("remote_enabled", False)
-    allowed_ips = settings.get("allowed_ips", "127.0.0.1")
+        settings = load_settings()
+        remote_enabled = settings.get("remote_enabled", False)
+        allowed_ips = settings.get("allowed_ips", "127.0.0.1")
 
-    if remote_enabled:
-        host = "0.0.0.0"
-    else:
-        host = "localhost"
-
-    rpc_server_instance = FilteredXMLRPCServer(
-        (host, port), allowed_ips_str=allowed_ips, allow_none=True, logRequests=False
-    )
-    rpc_server_instance.register_instance(FreeCADRPC())
-
-    def server_loop():
-        FreeCAD.Console.PrintMessage(f"RPC Server started at {host}:{port}\n")
         if remote_enabled:
-            FreeCAD.Console.PrintMessage(f"Remote connections enabled. Allowed IPs: {allowed_ips}\n")
-        rpc_server_instance.serve_forever()
+            host = "0.0.0.0"
+        else:
+            host = "localhost"
 
-    rpc_server_thread = threading.Thread(target=server_loop, daemon=True)
-    rpc_server_thread.start()
+        rpc_server_instance = FilteredXMLRPCServer(
+            (host, port), allowed_ips_str=allowed_ips, allow_none=True, logRequests=False
+        )
+        rpc_server_instance.register_instance(FreeCADRPC())
 
-    QtCore.QTimer.singleShot(500, process_gui_tasks)
+        def server_loop():
+            FreeCAD.Console.PrintMessage(f"RPC Server started at {host}:{port}\n")
+            if remote_enabled:
+                FreeCAD.Console.PrintMessage(f"Remote connections enabled. Allowed IPs: {allowed_ips}\n")
+            rpc_server_instance.serve_forever()
 
-    msg = f"RPC Server started at {host}:{port}."
-    if remote_enabled:
-        msg += f" Allowed IPs: {allowed_ips}"
-    return msg
+        rpc_server_thread = threading.Thread(target=server_loop, daemon=True)
+        rpc_server_thread.start()
+
+        QtCore.QTimer.singleShot(500, process_gui_tasks)
+
+        msg = f"RPC Server started at {host}:{port}."
+        if remote_enabled:
+            msg += f" Allowed IPs: {allowed_ips}"
+        return msg
 
 
 def stop_rpc_server():
-    global rpc_server_instance, rpc_server_thread
+    with _rpc_lock:
+        global rpc_server_instance, rpc_server_thread
 
-    if rpc_server_instance:
-        # Post the sentinel so the next process_gui_tasks tick exits without
-        # rescheduling; otherwise a subsequent start_rpc_server would leave
-        # two QTimer chains running.
-        rpc_request_queue.put(_DISPATCH_SHUTDOWN)
-        rpc_server_instance.shutdown()
-        rpc_server_thread.join()
-        rpc_server_instance = None
-        rpc_server_thread = None
-        FreeCAD.Console.PrintMessage("RPC Server stopped.\n")
-        return "RPC Server stopped."
+        if rpc_server_instance:
+            # Post the sentinel so the next process_gui_tasks tick exits
+            # without rescheduling; otherwise a subsequent start_rpc_server
+            # would leave two QTimer chains running.
+            try:
+                rpc_request_queue.put(_DISPATCH_SHUTDOWN)
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"MCP RPC: failed to post shutdown sentinel: {e}\n")
+            rpc_server_instance.shutdown()
+            rpc_server_thread.join()
+            # server_close() releases the listening socket immediately so a
+            # subsequent start_rpc_server on the same port does not hit
+            # TIME_WAIT. shutdown() only stops serve_forever().
+            try:
+                rpc_server_instance.server_close()
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"MCP RPC: server_close raised {type(e).__name__}: {e}\n")
+            rpc_server_instance = None
+            rpc_server_thread = None
+            FreeCAD.Console.PrintMessage("RPC Server stopped.\n")
+            return "RPC Server stopped."
 
-    return "RPC Server was not running."
+        return "RPC Server was not running."
 
 
 class StartRPCServerCommand:

@@ -204,6 +204,10 @@ def process_gui_tasks():
        queue is never starved.
     3. The ``_DISPATCH_SHUTDOWN`` sentinel lets ``stop_rpc_server`` exit
        the loop cleanly without leaving an orphan QTimer chain.
+    4. The ``finally`` block ALWAYS reschedules itself, even if something
+       outside ``task()`` raises (e.g. while draining the queue itself or
+       while scheduling the next tick). Without this a single dispatcher
+       exception would silently kill the entire RPC pipeline.
     """
     try:
         while not rpc_request_queue.empty():
@@ -223,8 +227,20 @@ def process_gui_tasks():
                 rpc_response_queue.put("GUI handler returned None")
             else:
                 rpc_response_queue.put(res)
+    except Exception as e:
+        # Anything raised OUTSIDE the per-task try (e.g. queue.empty race,
+        # _DISPATCH_SHUTDOWN comparison failure) must not abort the loop.
+        FreeCAD.Console.PrintError(
+            f"MCP RPC: process_gui_tasks dispatcher raised {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}"
+        )
     finally:
-        QtCore.QTimer.singleShot(500, process_gui_tasks)
+        try:
+            QtCore.QTimer.singleShot(500, process_gui_tasks)
+        except Exception as e:
+            FreeCAD.Console.PrintError(
+                f"MCP RPC: failed to reschedule process_gui_tasks: {type(e).__name__}: {e}\n"
+            )
 
 
 @dataclass

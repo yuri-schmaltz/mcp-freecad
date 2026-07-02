@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import freecad_mcp.responses as responses  # noqa: E402
 from freecad_mcp.responses import (  # noqa: E402
     SYSTEM_DIRECTIVE_PREFIX,
     add_screenshot_if_available,
@@ -75,4 +76,6 @@ if __name__ == "__main__":
     test_add_screenshot_none_returns_base()
     test_add_screenshot_only_text_feedback_returns_base()
     test_add_screenshot_appends_image()
+    test_prefix_disabled_via_env()
+    test_prefix_enabled_by_default()
     print("All response tests passed")

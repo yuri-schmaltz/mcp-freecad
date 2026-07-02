@@ -337,8 +337,25 @@ class Object:
 
 
 def set_object_property(
-    doc: FreeCAD.Document, obj: FreeCAD.DocumentObject, properties: dict[str, Any]
-):
+    doc: FreeCAD.Document,
+    obj: FreeCAD.DocumentObject,
+    properties: dict[str, Any],
+    on_warning: Callable[[str, str], None] | None = None,
+) -> list[tuple[str, str]]:
+    """Apply *properties* to *obj* and return a list of per-property errors.
+
+    Each error is returned as ``(property_name, error_message)`` so the
+    caller (typically the MCP layer) can decide whether to surface the
+    partial failure. The function never raises for per-property failures
+    (one bad property does not poison the rest) but propagates the
+    document-level exceptions because those indicate a broken state we
+    cannot continue from.
+
+    ``on_warning`` is an optional callback invoked as
+    ``on_warning(property, message)`` for each individual failure —
+    in production this is wired to ``FreeCAD.Console.PrintError``.
+    """
+    errors: list[tuple[str, str]] = []
     for prop, val in properties.items():
         try:
             if prop in obj.PropertiesList:
@@ -411,7 +428,13 @@ def set_object_property(
                 setattr(obj, prop, val)
 
         except Exception as e:
-            FreeCAD.Console.PrintError(f"Property '{prop}' assignment error: {e}\n")
+            msg = f"{type(e).__name__}: {e}"
+            errors.append((prop, msg))
+            if on_warning is not None:
+                on_warning(prop, msg)
+            else:
+                FreeCAD.Console.PrintError(f"Property '{prop}' assignment error: {e}\n")
+    return errors
 
 
 class FreeCADRPC:
@@ -785,7 +808,12 @@ class FreeCADRPC:
 
                     if callable(make_method):
                         res = make_method(doc, obj.name)
-                        set_object_property(doc, res, obj.properties)
+                        prop_errors = set_object_property(doc, res, obj.properties)
+                        if prop_errors:
+                            FreeCAD.Console.PrintWarning(
+                                f"FEM object '{res.Name}' created with {len(prop_errors)} property warning(s): "
+                                f"{prop_errors}\n"
+                            )
                         FreeCAD.Console.PrintMessage(
                             f"FEM object '{res.Name}' created with '{method_name}'.\n"
                         )
@@ -795,7 +823,12 @@ class FreeCADRPC:
                         getattr(doc, obj.analysis).addObject(res)
                 else:
                     res = doc.addObject(obj.type, obj.name)
-                    set_object_property(doc, res, obj.properties)
+                    prop_errors = set_object_property(doc, res, obj.properties)
+                    if prop_errors:
+                        FreeCAD.Console.PrintWarning(
+                            f"Object '{res.Name}' created with {len(prop_errors)} property warning(s): "
+                            f"{prop_errors}\n"
+                        )
                     FreeCAD.Console.PrintMessage(
                         f"{res.TypeId} '{res.Name}' added to '{doc_name}' via RPC.\n"
                     )
@@ -835,7 +868,12 @@ class FreeCADRPC:
                 )
                 # delete References from properties
                 del obj.properties["References"]
-            set_object_property(doc, obj_ins, obj.properties)
+            prop_errors = set_object_property(doc, obj_ins, obj.properties)
+            if prop_errors:
+                FreeCAD.Console.PrintWarning(
+                    f"Object '{obj.name}' edited with {len(prop_errors)} property warning(s): "
+                    f"{prop_errors}\n"
+                )
             doc.recompute()
             FreeCAD.Console.PrintMessage(f"Object '{obj.name}' updated via RPC.\n")
             return True
@@ -988,31 +1026,39 @@ class FreeCADRPC:
                 raise ValueError(f"Invalid view name: {view_name}")
 
             focused_selection = False
-
-            # Focus on specific object or fit all
-            if focus_object:
-                doc = FreeCAD.ActiveDocument
-                obj = doc.getObject(focus_object) if doc else None
-                if obj:
-                    FreeCADGui.Selection.clearSelection()
-                    FreeCADGui.Selection.addSelection(obj)
-                    FreeCADGui.SendMsgToActiveView("ViewSelection")
-                    focused_selection = True
-                    _flush_gui_events()
-                    FreeCADGui.Selection.clearSelection()
+            try:
+                # Focus on specific object or fit all
+                if focus_object:
+                    doc = FreeCAD.ActiveDocument
+                    obj = doc.getObject(focus_object) if doc else None
+                    if obj:
+                        FreeCADGui.Selection.clearSelection()
+                        FreeCADGui.Selection.addSelection(obj)
+                        FreeCADGui.SendMsgToActiveView("ViewSelection")
+                        focused_selection = True
+                        _flush_gui_events()
+                    else:
+                        view.fitAll()
                 else:
                     view.fitAll()
-            else:
-                view.fitAll()
 
-            _flush_gui_events()
-            width, height = _resolve_screenshot_size(view, width, height)
-            view.saveImage(save_path, width, height, "Current")
-
-            if focused_selection:
-                FreeCADGui.Selection.clearSelection()
-                _flush_gui_events(delay_ms=0)
-            return True
+                _flush_gui_events()
+                width, height = _resolve_screenshot_size(view, width, height)
+                view.saveImage(save_path, width, height, "Current")
+                return True
+            finally:
+                # Always clear the selection — the previous code only did it
+                # after a successful saveImage, so an exception (e.g. a
+                # KeyboardInterrupt during _flush_gui_events) left the object
+                # highlighted, polluting the next user interaction.
+                if focused_selection:
+                    try:
+                        FreeCADGui.Selection.clearSelection()
+                        _flush_gui_events(delay_ms=0)
+                    except Exception as e:
+                        FreeCAD.Console.PrintWarning(
+                            f"MCP RPC: failed to clear selection after screenshot: {e}\n"
+                        )
         except Exception as e:
             return str(e)
 

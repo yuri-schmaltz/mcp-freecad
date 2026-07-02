@@ -113,6 +113,19 @@ mcp_instructions = _load_system_directives()
 if ASSET_CREATION_STRATEGY:
     mcp_instructions = mcp_instructions + "\n\n" + ASSET_CREATION_STRATEGY
 
+# Cap the instructions to keep token cost predictable across long sessions.
+# Default 8KB — well under Claude's 200K context but large enough to fit
+# the gabarito (≈2.6KB) plus the asset strategy (≈1KB) plus headroom for
+# future additions. Override via env if you need more.
+_MAX_INSTRUCTIONS_CHARS = int(os.environ.get("FREECAD_MCP_MAX_INSTRUCTIONS_CHARS", "8192"))
+if len(mcp_instructions) > _MAX_INSTRUCTIONS_CHARS:
+    logger.warning(
+        f"mcp_instructions is {len(mcp_instructions)} chars; truncating to {_MAX_INSTRUCTIONS_CHARS}. "
+        "Set FREECAD_MCP_MAX_INSTRUCTIONS_CHARS to adjust."
+    )
+    mcp_instructions = mcp_instructions[:_MAX_INSTRUCTIONS_CHARS]
+logger.info(f"mcp_instructions size: {len(mcp_instructions)} chars (cap {_MAX_INSTRUCTIONS_CHARS})")
+
 mcp = FastMCP(
     "FreeCADMCP",
     instructions=mcp_instructions,

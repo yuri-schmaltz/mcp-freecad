@@ -3,9 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from freecad_mcp.responses import text_response, SYSTEM_DIRECTIVE_PREFIX
-from freecad_mcp.guidelines import check_prompt_conflict
 from freecad_mcp.operations.core import execute_code_operation
+from freecad_mcp.responses import SYSTEM_DIRECTIVE_PREFIX, text_response
 
 
 def test_prefix():

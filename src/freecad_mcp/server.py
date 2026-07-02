@@ -1,8 +1,10 @@
 import logging
 import os
-from logging.handlers import RotatingFileHandler
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, Literal
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ImageContent, TextContent
@@ -23,7 +25,6 @@ from .operations import (
     run_fem_analysis_operation,
 )
 from .prompt_text import ASSET_CREATION_STRATEGY
-from pathlib import Path
 
 
 def _load_system_directives() -> str:
@@ -76,12 +77,11 @@ def configure_logging() -> None:
         # If file handler cannot be created, continue with console only
         pass
 
-    root._freecad_mcp_configured = True
+    setattr(root, "_freecad_mcp_configured", True)
 
 
 configure_logging()
 from .server_state import ServerState
-
 
 logger = logging.getLogger("FreeCADMCPserver")
 
@@ -89,7 +89,7 @@ state = ServerState()
 
 
 @asynccontextmanager
-async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
+async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     try:
         logger.info("FreeCADMCP server starting up")
         try:
@@ -174,7 +174,7 @@ def create_object(
     obj_type: str,
     obj_name: str,
     analysis_name: str | None = None,
-    obj_properties: dict[str, Any] = None,
+    obj_properties: dict[str, Any] | None = None,
 ) -> list[TextContent | ImageContent]:
     """Create a new object in FreeCAD.
     Object type is starts with "Part::" or "Draft::" or "PartDesign::" or "Fem::".

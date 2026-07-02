@@ -1,12 +1,13 @@
-from typing import Callable, Any
 import logging
+from collections.abc import Callable
 from functools import wraps
+from typing import Any
 
 try:
     # Import here to avoid circular imports when running tests without full deps
     from .responses import text_response  # type: ignore
 except Exception:
-    def text_response(message: str):
+    def text_response(message: str):  # type: ignore[no-redef]
         return [{"type": "text", "text": message}]
 
 logger = logging.getLogger("FreeCADMCPutils")

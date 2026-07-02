@@ -221,8 +221,8 @@ def _install_queue_pump(rpc_mod):
     import queue
     import threading
 
-    req_q: "queue.Queue" = queue.Queue()
-    resp_q: "queue.Queue" = queue.Queue()
+    req_q: queue.Queue = queue.Queue()
+    resp_q: queue.Queue = queue.Queue()
 
     stop = threading.Event()
 
@@ -333,8 +333,8 @@ def test_tracked_call_cancels_at_dispatch():
     import queue as _queue
     import threading
 
-    req_q: "_queue.Queue" = _queue.Queue()
-    resp_q: "_queue.Queue" = _queue.Queue()
+    req_q: _queue.Queue = _queue.Queue()
+    resp_q: _queue.Queue = _queue.Queue()
     gate = threading.Event()
     pump_started = threading.Event()
     pump_stopped = threading.Event()
@@ -370,7 +370,6 @@ def test_tracked_call_cancels_at_dispatch():
             return {"success": True, "value": handler_calls["n"]}
 
         # Open the gate later; the pump will block on it.
-        import time
         gate.set()
 
         # Race a cancel against a tracked call by issuing cancel first.

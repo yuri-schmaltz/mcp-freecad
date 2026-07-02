@@ -5,7 +5,6 @@ These exercise the helpers in ``_fem_workdir`` directly, without importing
 """
 import importlib.util
 import os
-import sys
 import tempfile
 from pathlib import Path
 

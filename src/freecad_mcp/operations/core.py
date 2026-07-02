@@ -6,17 +6,16 @@ try:
 except Exception:
     from dataclasses import dataclass
 
-    @dataclass
+    @dataclass  # type: ignore[no-redef]
     class ImageContent:
         type: str
         data: str
         mimeType: str
 
 from ..freecad_client import FreeCADConnection
-from ..responses import ToolResponse, add_screenshot_if_available, json_response, text_response
 from ..guidelines import check_code_conflict, check_path_conflict
+from ..responses import ToolResponse, add_screenshot_if_available, json_response, text_response
 from ..utils import safe_operation
-
 
 logger = logging.getLogger("FreeCADMCPserver")
 

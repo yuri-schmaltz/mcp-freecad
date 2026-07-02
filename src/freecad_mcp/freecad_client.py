@@ -1,9 +1,7 @@
 import logging
 import os
-import socket
 import xmlrpc.client
 from typing import Any
-
 
 logger = logging.getLogger("FreeCADMCPserver")
 
@@ -96,7 +94,7 @@ class FreeCADConnection:
             close()
 
     def ping(self) -> bool:
-        return self.server.ping()
+        return self.server.ping()  # type: ignore[return-value]
 
     def cancel_request(self, request_id: str) -> dict[str, Any]:
         """Cooperatively cancel a previously-submitted request by id.
@@ -105,25 +103,25 @@ class FreeCADConnection:
         cancel only takes effect if the GUI worker has not yet started the
         task; once the handler is running it cannot be interrupted.
         """
-        return self.server.cancel_request(request_id)
+        return self.server.cancel_request(request_id)  # type: ignore[return-value]
 
     def create_document(self, name: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.create_document(name, request_id)
+        return self.server.create_document(name, request_id)  # type: ignore[return-value]
 
     def create_object(self, doc_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
-        return self.server.create_object(doc_name, obj_data, request_id)
+        return self.server.create_object(doc_name, obj_data, request_id)  # type: ignore[return-value]
 
     def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
-        return self.server.edit_object(doc_name, obj_name, obj_data, request_id)
+        return self.server.edit_object(doc_name, obj_name, obj_data, request_id)  # type: ignore[return-value]
 
     def delete_object(self, doc_name: str, obj_name: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.delete_object(doc_name, obj_name, request_id)
+        return self.server.delete_object(doc_name, obj_name, request_id)  # type: ignore[return-value]
 
     def insert_part_from_library(self, relative_path: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.insert_part_from_library(relative_path, request_id)
+        return self.server.insert_part_from_library(relative_path, request_id)  # type: ignore[return-value]
 
     def execute_code(self, code: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.execute_code(code, request_id)
+        return self.server.execute_code(code, request_id)  # type: ignore[return-value]
 
     def get_active_screenshot(
         self,
@@ -133,27 +131,30 @@ class FreeCADConnection:
         focus_object: str | None = None,
     ) -> str | None:
         try:
-            result = self.server.execute_code(_SCREENSHOT_SUPPORT_CHECK)
-            if not result.get("success", False) or "Current view does not support screenshots" in result.get("message", ""):
+            result = self.server.execute_code(_SCREENSHOT_SUPPORT_CHECK)  # type: ignore[union-attr]
+            # XML-RPC may return any JSON-serialisable type; coerce to a
+            # dict view defensively.
+            result_dict = result if isinstance(result, dict) else {}
+            if not result_dict.get("success", False) or "Current view does not support screenshots" in result_dict.get("message", ""):
                 logger.info("Screenshot unavailable in current view (likely Spreadsheet or TechDraw view)")
                 return None
 
-            return self.server.get_active_screenshot(view_name, width, height, focus_object)
+            return self.server.get_active_screenshot(view_name, width, height, focus_object)  # type: ignore[return-value]
         except Exception as e:
             logger.error(f"Error getting screenshot: {e}")
             return None
 
     def get_objects(self, doc_name: str) -> list[dict[str, Any]]:
-        return self.server.get_objects(doc_name)
+        return self.server.get_objects(doc_name)  # type: ignore[return-value]
 
     def get_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
-        return self.server.get_object(doc_name, obj_name)
+        return self.server.get_object(doc_name, obj_name)  # type: ignore[return-value]
 
     def get_parts_list(self) -> list[str]:
-        return self.server.get_parts_list()
+        return self.server.get_parts_list()  # type: ignore[return-value]
 
     def list_documents(self) -> list[str]:
-        return self.server.list_documents()
+        return self.server.list_documents()  # type: ignore[return-value]
 
     def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.run_fem_analysis(doc_name, analysis_name, timeout, request_id)
+        return self.server.run_fem_analysis(doc_name, analysis_name, timeout, request_id)  # type: ignore[return-value]

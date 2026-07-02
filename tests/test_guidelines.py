@@ -20,7 +20,6 @@ from freecad_mcp.guidelines import (  # noqa: E402
     check_prompt_conflict,
 )
 
-
 # ---------------------------------------------------------------------------
 # check_code_conflict — dangerous patterns
 # ---------------------------------------------------------------------------
@@ -142,6 +141,7 @@ def test_code_extra_pattern_env(monkeypatch=None):
     """FREECAD_MCP_BLOCKED_PATTERNS lets operators add custom regexes."""
     import importlib
     import os
+
     import freecad_mcp.guidelines as g
 
     saved = os.environ.get("FREECAD_MCP_BLOCKED_PATTERNS")
@@ -164,6 +164,7 @@ def test_code_extra_pattern_invalid_ignored():
     """Invalid regexes are logged and skipped, not raised."""
     import importlib
     import os
+
     import freecad_mcp.guidelines as g
 
     saved = os.environ.get("FREECAD_MCP_BLOCKED_PATTERNS")

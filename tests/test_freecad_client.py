@@ -95,7 +95,7 @@ def test_connection_to_unresponsive_peer_times_out():
     try:
         try:
             proxy.ping()
-        except (socket.timeout, OSError) as e:
+        except (TimeoutError, OSError) as e:
             elapsed = time.time() - t0
             # Connect succeeded quickly because the listener accepts; the
             # timeout kicks in on the read of the HTTP response. We accept

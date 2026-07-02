@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Tuple
 
 logger = logging.getLogger("FreeCADMCPguidelines")
 
@@ -112,7 +111,7 @@ def _match_any(
     return None
 
 
-def check_code_conflict(code: str) -> Tuple[bool, str]:
+def check_code_conflict(code: str) -> tuple[bool, str]:
     """Check an executable string (Python code, shell snippet) for dangerous calls.
 
     Returns ``(conflict, message)``. Safe strings return ``(False, "")``.
@@ -136,7 +135,7 @@ def check_code_conflict(code: str) -> Tuple[bool, str]:
     return True, msg
 
 
-def check_prompt_conflict(prompt: str) -> Tuple[bool, str]:
+def check_prompt_conflict(prompt: str) -> tuple[bool, str]:
     """Check free-form prompt text for agreement-trap phrases.
 
     Use this for user-supplied text that the LLM will interpret; use
@@ -160,7 +159,7 @@ def check_prompt_conflict(prompt: str) -> Tuple[bool, str]:
     return True, msg
 
 
-def check_path_conflict(path: str) -> Tuple[bool, str]:
+def check_path_conflict(path: str) -> tuple[bool, str]:
     """Defence-in-depth check on a filesystem path string.
 
     The authoritative validation is :func:`parts_library._safe_resolve`

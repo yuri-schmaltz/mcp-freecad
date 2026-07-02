@@ -1,23 +1,22 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import List, Union
 
 try:
     from mcp.types import ImageContent, TextContent  # type: ignore
 except Exception:
-    @dataclass
+    @dataclass  # type: ignore[no-redef]
     class TextContent:
         type: str
         text: str
 
-    @dataclass
+    @dataclass  # type: ignore[no-redef]
     class ImageContent:
         type: str
         data: str
         mimeType: str
 
-ToolResponse = List[Union[TextContent, ImageContent]]
+ToolResponse = list[TextContent | ImageContent]
 
 
 # Sentence required by gabarito_ia.pdf to appear at the start of responses

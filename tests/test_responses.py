@@ -4,7 +4,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import freecad_mcp.responses as responses  # noqa: E402
 from freecad_mcp.responses import (  # noqa: E402
     SYSTEM_DIRECTIVE_PREFIX,
     add_screenshot_if_available,

@@ -40,7 +40,15 @@ def _load_system_directives() -> str:
 
 
 def configure_logging() -> None:
-    """Configure root logging with console and rotating file handlers."""
+    """Configure root logging with console and rotating file handlers.
+
+    Idempotent: re-importing or reloading the module will not stack duplicate
+    handlers (which would otherwise inflate logs and confuse rotation).
+    """
+    root = logging.getLogger()
+    if getattr(root, "_freecad_mcp_configured", False):
+        return
+
     log_level_name = os.getenv("FREECAD_MCP_LOGLEVEL", "INFO").upper()
     level = getattr(logging, log_level_name, logging.INFO)
 
@@ -48,7 +56,6 @@ def configure_logging() -> None:
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s", "%Y-%m-%dT%H:%M:%SZ"
     )
 
-    root = logging.getLogger()
     root.setLevel(level)
 
     # Console handler
@@ -68,6 +75,8 @@ def configure_logging() -> None:
     except Exception:
         # If file handler cannot be created, continue with console only
         pass
+
+    root._freecad_mcp_configured = True
 
 
 configure_logging()

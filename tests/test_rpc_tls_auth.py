@@ -1,10 +1,7 @@
 """Tests for the TLS + bearer-token auth layer of FilteredXMLRPCServer."""
 import importlib.util
-import socket
 import sys
 import tempfile
-import threading
-import time
 import types
 from pathlib import Path
 
@@ -186,7 +183,7 @@ def test_check_auth_constant_time_compare():
     """
     import hmac as _hmac
     rpc_mod = _load_rpc_server()
-    handler = rpc_mod._BearerAuthHandler()
+    rpc_mod._BearerAuthHandler()  # instantiation only, no value used
     # We do not need to assert time; just confirm the helper is wired.
     assert hasattr(_hmac, "compare_digest")
 

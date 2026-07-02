@@ -1,8 +1,8 @@
 import base64
+import contextlib
 import gzip
 import logging
 import os
-import socket
 import xmlrpc.client
 from typing import Any
 
@@ -201,10 +201,8 @@ class FreeCADConnection:
             with open(tmp_path, "rb") as f:
                 raw = f.read()
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
         if len(raw) >= threshold:
             compressed = gzip.compress(raw, compresslevel=6)

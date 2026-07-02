@@ -108,7 +108,7 @@ def test_transcode_unknown_format_returns_none():
     assert rpc_mod._transcode_screenshot(_TINY_PNG, "") is None
 
 
-def test_transcode_png_passthrough_not_supported():
+def test_transcode_passthrough_not_supported():
     """_transcode_screenshot only handles jpeg/jpg/webp; 'png' should return None
     (caller should use the raw PNG path)."""
     rpc_mod = _load_rpc_server()
@@ -117,9 +117,8 @@ def test_transcode_png_passthrough_not_supported():
 
 def test_transcode_with_pillow_when_available():
     """If Pillow is importable, transcoding produces a valid base64 string."""
-    pytest = type("pytest_marker", (), {})  # noqa
     try:
-        from PIL import Image  # type: ignore  # noqa
+        import PIL  # type: ignore  # noqa: F401 — existence check
     except Exception:
         return  # Pillow not installed — skip silently (test still passes)
 
@@ -141,6 +140,5 @@ def test_transcode_with_pillow_when_available():
 if __name__ == "__main__":
     test_transcode_returns_none_when_pillow_missing()
     test_transcode_unknown_format_returns_none()
-    test_transcode_passthrough_not_supported()
     test_transcode_with_pillow_when_available()
     print("All screenshot transcode tests passed")

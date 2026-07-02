@@ -40,8 +40,90 @@ _DEFAULT_SETTINGS = {
 }
 
 
-def _get_settings_path():
-    return os.path.join(FreeCAD.getUserAppDataDir(), _SETTINGS_FILENAME)
+def _writable_dir(path: str) -> bool:
+    """Return True if *path* exists and is writable by the current user."""
+    if not path:
+        return False
+    if not os.path.isdir(path):
+        return False
+    # Probe with a touch-then-remove of a temp filename.
+    try:
+        fd, probe = tempfile.mkstemp(prefix=".mcp_write_probe_", dir=path)
+        os.close(fd)
+        os.unlink(probe)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def _ensure_dir(path: str) -> bool:
+    """Create *path* (and parents) if it doesn't exist. Returns True on success."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def _resolve_settings_dir() -> str:
+    """Pick a directory that exists and is writable for the settings file.
+
+    Tries in order:
+
+    1. ``FreeCAD.getUserAppDataDir()`` — the canonical FreeCAD user dir.
+       If it exists but is read-only (sandboxed installs, portable mode on
+       Windows, CI), we fall back.
+    2. ``$XDG_CONFIG_HOME/freecad-mcp`` (Linux) or ``$HOME/.config/freecad-mcp``.
+    3. ``tempfile.gettempdir()/freecad-mcp`` as a last resort.
+
+    Returns the first directory that exists and is writable, or the temp
+    fallback even if not writable (so the caller at least has a path to
+    report; ``save_settings`` will still surface the I/O error).
+    """
+    # 1. FreeCAD user data dir.
+    try:
+        primary = FreeCAD.getUserAppDataDir()
+    except Exception as e:
+        FreeCAD.Console.PrintWarning(
+            f"MCP settings: FreeCAD.getUserAppDataDir() raised {type(e).__name__}: {e}\n"
+        )
+        primary = None
+    if primary and _ensure_dir(primary) and _writable_dir(primary):
+        return primary
+
+    if primary:
+        FreeCAD.Console.PrintWarning(
+            f"MCP settings: {primary!r} is not writable; falling back.\n"
+        )
+
+    # 2. XDG / HOME config.
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    candidates = []
+    if xdg:
+        candidates.append(os.path.join(xdg, "freecad-mcp"))
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        candidates.append(os.path.join(home, ".config", "freecad-mcp"))
+        candidates.append(os.path.join(home, "freecad-mcp"))
+
+    for c in candidates:
+        if _ensure_dir(c) and _writable_dir(c):
+            return c
+
+    # 3. Temp fallback (last resort).
+    fallback = os.path.join(tempfile.gettempdir(), "freecad-mcp")
+    _ensure_dir(fallback)
+    return fallback
+
+
+def _get_settings_path() -> str:
+    """Return the absolute path to the settings JSON file.
+
+    Resolved lazily on each call so a deployment that gains write access
+    mid-session (e.g. user fixes a permission) starts using the proper
+    location without a restart.
+    """
+    return os.path.join(_resolve_settings_dir(), _SETTINGS_FILENAME)
 
 
 def load_settings():
@@ -56,17 +138,19 @@ def load_settings():
                     settings[key] = value
             return settings
         except Exception as e:
-            FreeCAD.Console.PrintWarning(f"Failed to load MCP settings: {e}\n")
+            FreeCAD.Console.PrintWarning(f"Failed to load MCP settings from {path}: {e}\n")
     return dict(_DEFAULT_SETTINGS)
 
 
 def save_settings(settings):
     path = _get_settings_path()
     try:
+        # Make sure the directory exists (idempotent) before opening for write.
+        _ensure_dir(os.path.dirname(path))
         with open(path, "w") as f:
             json.dump(settings, f, indent=2)
     except Exception as e:
-        FreeCAD.Console.PrintError(f"Failed to save MCP settings: {e}\n")
+        FreeCAD.Console.PrintError(f"Failed to save MCP settings to {path}: {e}\n")
 
 
 # --- IP-filtered XML-RPC server ---

@@ -67,6 +67,41 @@ def test_add_screenshot_appends_image():
     assert img_part.mimeType == "image/png"
 
 
+def test_prefix_disabled_via_env():
+    """FREECAD_MCP_NO_DIRECTIVE_PREFIX=1 suppresses the audit prefix."""
+    import importlib
+    import os
+    import freecad_mcp.responses as responses_mod
+    saved = os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX")
+    try:
+        os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = "1"
+        importlib.reload(responses_mod)
+        r = responses_mod.text_response("hello")
+        assert r[0].text == "hello", r[0].text
+    finally:
+        if saved is None:
+            os.environ.pop("FREECAD_MCP_NO_DIRECTIVE_PREFIX", None)
+        else:
+            os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved
+        importlib.reload(responses_mod)
+
+
+def test_prefix_enabled_by_default():
+    """Without the env var, the prefix is back."""
+    import importlib
+    import os
+    import freecad_mcp.responses as responses_mod
+    saved = os.environ.pop("FREECAD_MCP_NO_DIRECTIVE_PREFIX", None)
+    try:
+        importlib.reload(responses_mod)
+        r = responses_mod.text_response("hello")
+        assert r[0].text.startswith(SYSTEM_DIRECTIVE_PREFIX)
+    finally:
+        if saved is not None:
+            os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved
+        importlib.reload(responses_mod)
+
+
 if __name__ == "__main__":
     test_text_response_has_prefix()
     test_text_response_does_not_double_prefix()

@@ -31,7 +31,6 @@ from .operations import (
     undo_operation,
 )
 from .prompt_text import ASSET_CREATION_STRATEGY
-from .responses import json_response, text_response
 
 
 def _load_system_directives() -> str:
@@ -88,7 +87,7 @@ def configure_logging() -> None:
 
 
 configure_logging()
-from .server_state import ServerState
+from .server_state import ServerState  # noqa: E402 — after configure_logging on purpose
 
 logger = logging.getLogger("FreeCADMCPserver")
 

@@ -148,7 +148,7 @@ def _wait_for_start():
 
 def test_start_when_already_running_is_idempotent():
     _reset_module_state()
-    msg1 = rpc_server.start_rpc_server(port=9875)
+    rpc_server.start_rpc_server(port=9875)
     _wait_for_start()
     # Second call returns the "already running" sentinel and does NOT
     # create a second server.
@@ -238,5 +238,5 @@ if __name__ == "__main__":
     test_stop_calls_server_close()
     test_stop_releases_lock_so_subsequent_start_succeeds()
     test_concurrent_start_only_one_wins()
-    test_concurrent_start_does_not_leak() if False else test_concurrent_start_stop_does_not_leak()
+    test_concurrent_start_stop_does_not_leak()
     print("All RPC lifecycle tests passed")

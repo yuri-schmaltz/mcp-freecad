@@ -218,3 +218,56 @@ def run_fem_analysis_operation(
         "summary": f"FEM analysis '{analysis_name}' failed: {res.get('error')}",
         **res,
     })
+
+
+@safe_operation
+def undo_operation(freecad: FreeCADConnection, doc_name: str, steps: int = 1) -> ToolResponse:
+    res = freecad.undo(doc_name, steps)
+    if res.get("success"):
+        return text_response(
+            f"Undid {res.get('undone_steps', steps)} transaction(s) in '{doc_name}'."
+        )
+    return text_response(f"Failed to undo: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def redo_operation(freecad: FreeCADConnection, doc_name: str, steps: int = 1) -> ToolResponse:
+    res = freecad.redo(doc_name, steps)
+    if res.get("success"):
+        return text_response(
+            f"Redid {res.get('redone_steps', steps)} transaction(s) in '{doc_name}'."
+        )
+    return text_response(f"Failed to redo: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def save_document_operation(freecad: FreeCADConnection, doc_name: str, path: str | None = None) -> ToolResponse:
+    res = freecad.save_document(doc_name, path)
+    if res.get("success"):
+        return text_response(f"Saved '{doc_name}' to {res.get('path')}.")
+    return text_response(f"Failed to save: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def export_object_operation(
+    freecad: FreeCADConnection, doc_name: str, obj_name: str, path: str, fmt: str | None = None,
+) -> ToolResponse:
+    res = freecad.export_object(doc_name, obj_name, path, fmt)
+    if res.get("success"):
+        return text_response(
+            f"Exported '{obj_name}' to {res.get('path')} as {res.get('format')}."
+        )
+    return text_response(f"Failed to export: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def get_active_view_operation(freecad: FreeCADConnection) -> ToolResponse:
+    res = freecad.get_active_view()
+    if not res.get("success"):
+        return text_response(f"Failed to get active view: {res.get('error', 'unknown error')}")
+    return json_response(res)
+
+
+@safe_operation
+def health_check_operation(freecad: FreeCADConnection) -> ToolResponse:
+    return json_response(freecad.health_check())

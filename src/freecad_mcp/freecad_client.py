@@ -158,3 +158,21 @@ class FreeCADConnection:
 
     def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600, request_id: str | None = None) -> dict[str, Any]:
         return self.server.run_fem_analysis(doc_name, analysis_name, timeout, request_id)  # type: ignore[return-value]
+
+    def health_check(self) -> dict[str, Any]:
+        return self.server.health_check()  # type: ignore[return-value]
+
+    def undo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        return self.server.undo(doc_name, steps)  # type: ignore[return-value]
+
+    def redo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        return self.server.redo(doc_name, steps)  # type: ignore[return-value]
+
+    def save_document(self, doc_name: str, path: str | None = None) -> dict[str, Any]:
+        return self.server.save_document(doc_name, path)  # type: ignore[return-value]
+
+    def export_object(self, doc_name: str, obj_name: str, path: str, fmt: str | None = None) -> dict[str, Any]:
+        return self.server.export_object(doc_name, obj_name, path, fmt)  # type: ignore[return-value]
+
+    def get_active_view(self) -> dict[str, Any]:
+        return self.server.get_active_view()  # type: ignore[return-value]

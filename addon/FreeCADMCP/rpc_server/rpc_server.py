@@ -28,6 +28,10 @@ from ._request_tracking import get_default_tracker as _get_tracker
 rpc_server_thread = None
 rpc_server_instance = None
 
+# Captured once when the module loads; health_check uses it to report uptime.
+import time as _module_load_time
+_SERVER_START_TIME = _module_load_time.time()
+
 
 # --- Settings persistence ---
 
@@ -525,6 +529,129 @@ class FreeCADRPC:
 
     def ping(self):
         return True
+
+    def health_check(self) -> dict[str, Any]:
+        """Lightweight liveness/readiness probe for monitoring.
+
+        Returns the server's uptime, queue sizes, per-operation call
+        counts, and the resolved settings directory. Always succeeds
+        (never raises) so an external monitor can detect liveness
+        without side effects.
+        """
+        import time as _time
+        now = _time.time()
+        tracker = _get_tracker()
+        with _rpc_lock:
+            running = rpc_server_instance is not None
+        return {
+            "success": True,
+            "uptime_seconds": round(now - _SERVER_START_TIME, 3),
+            "rpc_server_running": running,
+            "request_queue_size": rpc_request_queue.qsize(),
+            "response_queue_size": rpc_response_queue.qsize(),
+            "cached_responses": len(tracker.cached_ids()),
+            "pending_cancellations": len(tracker.pending_cancellations()),
+            "settings_dir": _get_settings_path(),
+        }
+
+    def undo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        """Undo *steps* transactions in *doc_name*."""
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            for _ in range(max(1, int(steps))):
+                doc.undo()
+            doc.recompute()
+            return {"success": True, "undone_steps": max(1, int(steps))}
+        return self._tracked_call(None, task, self._timeout_for("create_document"))
+
+    def redo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        """Redo *steps* transactions in *doc_name*."""
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            for _ in range(max(1, int(steps))):
+                doc.redo()
+            doc.recompute()
+            return {"success": True, "redone_steps": max(1, int(steps))}
+        return self._tracked_call(None, task, self._timeout_for("create_document"))
+
+    def save_document(self, doc_name: str, path: str | None = None) -> dict[str, Any]:
+        """Save *doc_name* to *path* (or to its current file path if None)."""
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            try:
+                if path:
+                    doc.saveAs(path)
+                    return {"success": True, "path": path}
+                doc.save()
+                return {"success": True, "path": doc.FileName or "<unsaved>"}
+            except Exception as e:
+                return {"success": False, "error": f"{type(e).__name__}: {e}"}
+        return self._tracked_call(None, task, self._timeout_for("create_document"))
+
+    def export_object(self, doc_name: str, obj_name: str, path: str, fmt: str | None = None) -> dict[str, Any]:
+        """Export *obj_name* from *doc_name* to *path*.
+
+        ``fmt`` may be "stl", "step", "iges", "obj" etc. — FreeCAD
+        infers from the extension if not given. The result is
+        ``{"success": True, "path": path, "format": fmt_or_inferred}``.
+        """
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            obj = doc.getObject(obj_name)
+            if not obj:
+                return {"success": False, "error": f"Object '{obj_name}' not found."}
+            try:
+                import os as _os
+                if fmt is None:
+                    ext = _os.path.splitext(path)[1].lstrip(".").lower()
+                    fmt = ext or "stl"
+                # FreeCAD's Mesh API takes care of STL; other formats need
+                # the Part API. We branch on the extension.
+                if fmt in ("stl",):
+                    import MeshPart
+                    mesh = MeshPart.meshFromShape(obj.Shape)
+                    mesh.write(path)
+                else:
+                    # step/iges/brep/etc. go through the document exporter.
+                    doc.exportPart = getattr(doc, "exportPart", None)
+                    # FreeCAD exposes document-level exporters that can
+                    # take a single object via a property set.
+                    from FreeCAD import export as fc_export  # type: ignore
+                    fc_export([obj], path)
+                return {"success": True, "path": path, "format": fmt}
+            except Exception as e:
+                return {"success": False, "error": f"{type(e).__name__}: {e}"}
+        return self._tracked_call(None, task, self._timeout_for("create_object"))
+
+    def get_active_view(self) -> dict[str, Any]:
+        """Return metadata about the currently active view."""
+        def task():
+            try:
+                view = FreeCADGui.ActiveDocument.ActiveView
+            except Exception as e:
+                return {"success": False, "error": f"{type(e).__name__}: {e}"}
+            if view is None:
+                return {"success": False, "error": "no active view"}
+            try:
+                width, height = _get_view_size(view)
+            except Exception:
+                width = height = None
+            return {
+                "success": True,
+                "view_type": type(view).__name__,
+                "width": width,
+                "height": height,
+                "has_save_image": hasattr(view, "saveImage"),
+            }
+        return self._tracked_call(None, task, self._timeout_for("get_active_screenshot"))
 
     def cancel_request(self, request_id: str) -> dict[str, Any]:
         """Cancel a previously-submitted request by id (cooperative).

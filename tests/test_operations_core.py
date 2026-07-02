@@ -34,6 +34,12 @@ class FakeFreeCAD:
         get_parts_list=None,
         list_documents=None,
         run_fem_analysis=None,
+        health_check=None,
+        undo=None,
+        redo=None,
+        save_document=None,
+        export_object=None,
+        get_active_view=None,
     ):
         self.calls = []
         self._handlers = {
@@ -49,6 +55,12 @@ class FakeFreeCAD:
             "get_parts_list": get_parts_list,
             "list_documents": list_documents,
             "run_fem_analysis": run_fem_analysis,
+            "health_check": health_check,
+            "undo": undo,
+            "redo": redo,
+            "save_document": save_document,
+            "export_object": export_object,
+            "get_active_view": get_active_view,
         }
 
     def _dispatch(self, name, *args, **kwargs):
@@ -93,6 +105,24 @@ class FakeFreeCAD:
 
     def run_fem_analysis(self, doc_name, analysis_name, timeout):
         return self._dispatch("run_fem_analysis", doc_name, analysis_name, timeout)
+
+    def health_check(self):
+        return self._dispatch("health_check")
+
+    def undo(self, doc_name, steps=1):
+        return self._dispatch("undo", doc_name, steps)
+
+    def redo(self, doc_name, steps=1):
+        return self._dispatch("redo", doc_name, steps)
+
+    def save_document(self, doc_name, path=None):
+        return self._dispatch("save_document", doc_name, path)
+
+    def export_object(self, doc_name, obj_name, path, fmt=None):
+        return self._dispatch("export_object", doc_name, obj_name, path, fmt)
+
+    def get_active_view(self):
+        return self._dispatch("get_active_view")
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +349,84 @@ def test_safe_operation_catches_exception():
     r = core.get_objects_operation(fake, False, "Doc")
     texts = [t.text for t in r if hasattr(t, "text")]
     assert any("Internal server error" in t and "boom" in t for t in texts)
+
+
+def test_undo_success():
+    fake = FakeFreeCAD(undo=lambda d, s: {"success": True, "undone_steps": 3})
+    r = core.undo_operation(fake, "Doc", 3)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Undid 3" in t for t in texts)
+
+
+def test_undo_failure():
+    fake = FakeFreeCAD(undo=lambda d, s: {"success": False, "error": "no doc"})
+    r = core.undo_operation(fake, "Missing", 1)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Failed to undo" in t and "no doc" in t for t in texts)
+
+
+def test_redo_success():
+    fake = FakeFreeCAD(redo=lambda d, s: {"success": True, "redone_steps": 2})
+    r = core.redo_operation(fake, "Doc", 2)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Redid 2" in t for t in texts)
+
+
+def test_save_document_success():
+    fake = FakeFreeCAD(save_document=lambda d, p: {"success": True, "path": p or "/x.fcstd"})
+    r = core.save_document_operation(fake, "Doc", "/tmp/x.fcstd")
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Saved" in t and "/tmp/x.fcstd" in t for t in texts)
+
+
+def test_save_document_failure():
+    fake = FakeFreeCAD(save_document=lambda d, p: {"success": False, "error": "disk full"})
+    r = core.save_document_operation(fake, "Doc", "/x.fcstd")
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Failed" in t and "disk full" in t for t in texts)
+
+
+def test_export_object_success():
+    fake = FakeFreeCAD(export_object=lambda d, n, p, f: {"success": True, "path": p, "format": f or "stl"})
+    r = core.export_object_operation(fake, "Doc", "Box", "/tmp/x.stl", None)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Exported" in t and "stl" in t for t in texts)
+
+
+def test_export_object_failure():
+    fake = FakeFreeCAD(export_object=lambda d, n, p, f: {"success": False, "error": "no shape"})
+    r = core.export_object_operation(fake, "Doc", "Box", "/tmp/x.stl", None)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Failed" in t and "no shape" in t for t in texts)
+
+
+def test_get_active_view_success():
+    fake = FakeFreeCAD(get_active_view=lambda: {
+        "success": True, "view_type": "View3DInventor",
+        "width": 1024, "height": 768, "has_save_image": True,
+    })
+    r = core.get_active_view_operation(fake)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("View3DInventor" in t and "1024" in t for t in texts)
+
+
+def test_get_active_view_failure():
+    fake = FakeFreeCAD(get_active_view=lambda: {"success": False, "error": "no active view"})
+    r = core.get_active_view_operation(fake)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("Failed" in t and "no active view" in t for t in texts)
+
+
+def test_health_check_returns_json():
+    fake = FakeFreeCAD(health_check=lambda: {
+        "success": True, "uptime_seconds": 12.5, "rpc_server_running": True,
+        "request_queue_size": 0, "response_queue_size": 0,
+        "cached_responses": 0, "pending_cancellations": 0,
+        "settings_dir": "/tmp/freecad_mcp_settings.json",
+    })
+    r = core.health_check_operation(fake)
+    texts = [t.text for t in r if hasattr(t, "text")]
+    assert any("uptime_seconds" in t and "settings_dir" in t for t in texts)
 
 
 if __name__ == "__main__":

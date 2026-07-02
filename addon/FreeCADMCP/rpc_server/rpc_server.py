@@ -594,40 +594,36 @@ class FreeCADRPC:
 
         Returns a base64-encoded string of the screenshot or None if a screenshot
         cannot be captured (e.g., when in TechDraw or Spreadsheet view).
+
+        The view-support check and the capture run inside a single GUI-thread
+        task, so the view cannot be switched out from under us between the two
+        steps (which used to race when the user toggled workbenches).
         """
-        # First check if the active view supports screenshots
-        def check_view_supports_screenshots():
+        # Build the tmp path OUTSIDE the task so the queue.put can be a single
+        # closure with no side effects leaking to the GUI thread.
+        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+
+        def task():
             try:
                 active_view = FreeCADGui.ActiveDocument.ActiveView
                 if active_view is None:
                     FreeCAD.Console.PrintWarning("No active view available\n")
-                    return False
+                    return {"success": False, "reason": "no_active_view"}
 
-                view_type = type(active_view).__name__
-                has_save_image = hasattr(active_view, 'saveImage')
-                FreeCAD.Console.PrintMessage(f"View type: {view_type}, Has saveImage: {has_save_image}\n")
-                return has_save_image
+                if not hasattr(active_view, 'saveImage'):
+                    FreeCAD.Console.PrintWarning("Current view does not support screenshots\n")
+                    return {"success": False, "reason": "view_unsupported"}
+
+                ok = self._save_active_screenshot(tmp_path, view_name, width, height, focus_object)
+                if ok is not True:
+                    return {"success": False, "reason": "capture_failed", "detail": ok}
+                return {"success": True}
             except Exception as e:
-                FreeCAD.Console.PrintError(f"Error checking view capabilities: {e}\n")
-                return False
+                FreeCAD.Console.PrintError(f"Screenshot task raised {type(e).__name__}: {e}\n")
+                return {"success": False, "reason": "exception", "detail": f"{type(e).__name__}: {e}"}
 
-        rpc_request_queue.put(check_view_supports_screenshots)
-        try:
-            supports_screenshots = rpc_response_queue.get(timeout=self._timeout_for("get_active_screenshot", timeout))
-        except queue.Empty:
-            FreeCAD.Console.PrintWarning("Screenshot view-check timed out\n")
-            return None
-
-        if not supports_screenshots:
-            FreeCAD.Console.PrintWarning("Current view does not support screenshots\n")
-            return None
-
-        # If view supports screenshots, proceed with capture
-        fd, tmp_path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        rpc_request_queue.put(
-            lambda: self._save_active_screenshot(tmp_path, view_name, width, height, focus_object)
-        )
+        rpc_request_queue.put(task)
         try:
             res = rpc_response_queue.get(timeout=self._timeout_for("get_active_screenshot", timeout))
         except queue.Empty:
@@ -635,20 +631,20 @@ class FreeCADRPC:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
             return None
-        if res is True:
-            try:
-                with open(tmp_path, "rb") as image_file:
-                    image_bytes = image_file.read()
-                    encoded = base64.b64encode(image_bytes).decode("utf-8")
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            return encoded
-        else:
+
+        if not isinstance(res, dict) or not res.get("success"):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-            FreeCAD.Console.PrintWarning(f"Failed to capture screenshot: {res}\n")
             return None
+
+        try:
+            with open(tmp_path, "rb") as image_file:
+                image_bytes = image_file.read()
+            encoded = base64.b64encode(image_bytes).decode("utf-8")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        return encoded
 
     def _create_document_gui(self, name):
         doc = FreeCAD.newDocument(name)

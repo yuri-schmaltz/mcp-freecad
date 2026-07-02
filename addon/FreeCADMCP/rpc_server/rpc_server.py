@@ -14,7 +14,7 @@ import tempfile
 import threading
 import traceback
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 from xmlrpc.server import SimpleXMLRPCServer
 
 from PySide import QtCore, QtWidgets
@@ -23,6 +23,7 @@ from .parts_library import get_parts_list, insert_part_from_library
 from .serialize import serialize_object
 from ._fem_workdir import keep_fem_workdir as _keep_fem_workdir
 from ._fem_workdir import safe_rmtree as _safe_rmtree
+from ._request_tracking import get_default_tracker as _get_tracker
 
 rpc_server_thread = None
 rpc_server_instance = None
@@ -336,64 +337,115 @@ class FreeCADRPC:
     def ping(self):
         return True
 
-    def create_document(self, name="New_Document"):
-        rpc_request_queue.put(lambda: self._create_document_gui(name))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "document_name": name}
-        else:
-            return {"success": False, "error": res}
+    def cancel_request(self, request_id: str) -> dict[str, Any]:
+        """Cancel a previously-submitted request by id (cooperative).
 
-    def create_object(self, doc_name, obj_data: dict[str, Any]):
+        Marks ``request_id`` so that when the GUI worker pops the queued
+        task it short-circuits and reports ``cancelled``. Safe to call
+        multiple times with the same id; safe to call with an unknown id
+        (returns ``cancelled=False``). The id is removed from the
+        cancelled set once consumed.
+        """
+        if not request_id or not isinstance(request_id, str):
+            return {"success": False, "error": "request_id must be a non-empty string"}
+        tracker = _get_tracker()
+        cancelled = tracker.cancel(request_id)
+        return {"success": True, "request_id": request_id, "cancelled": cancelled}
+
+    def _tracked_call(
+        self,
+        request_id: str | None,
+        task_factory: Callable[[], Any],
+        timeout: float,
+    ) -> Any:
+        """Submit *task_factory* to the GUI queue with idempotency + cancel.
+
+        Behaviour:
+        * If ``request_id`` already completed, return the cached response.
+        * If ``request_id`` is cancelled before dispatch, return a
+          cancellation response without invoking the task.
+        * Otherwise schedule the task; the dispatched task checks the
+          cancel flag right before running and short-circuits if set.
+        * On completion, cache the response under ``request_id`` (FIFO
+          eviction; see ``_request_tracking.RequestTracker``).
+        """
+        tracker = _get_tracker()
+
+        # Fast paths before we even touch the queue.
+        if request_id is not None:
+            cached = tracker.get_cached(request_id)
+            if cached is not None:
+                return cached
+            if tracker.consume_cancel(request_id):
+                return {"success": False, "error": "request cancelled before execution", "request_id": request_id, "cancelled": True}
+
+        # Build the GUI-thread task. We close over the tracker and id so
+        # cancellation checks happen at the latest possible moment.
+        def task():
+            if request_id is not None and tracker.consume_cancel(request_id):
+                return {"success": False, "error": "request cancelled before execution", "request_id": request_id, "cancelled": True}
+            try:
+                result = task_factory()
+            except Exception as e:
+                result = {"success": False, "error": f"{type(e).__name__}: {e}"}
+            if request_id is not None:
+                tracker.cache_response(request_id, result)
+            return result
+
+        rpc_request_queue.put(task)
+        try:
+            return rpc_response_queue.get(timeout=timeout)
+        except queue.Empty:
+            return {"success": False, "error": f"no response within {timeout}s (still queued or running on GUI thread)"}
+
+    def create_document(self, name="New_Document", request_id: str | None = None):
+        def task():
+            ok = self._create_document_gui(name)
+            return {"success": ok is True, "document_name": name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self.TIMEOUT)
+
+    def create_object(self, doc_name, obj_data: dict[str, Any], request_id: str | None = None):
         obj = Object(
             name=obj_data.get("Name", "New_Object"),
             type=obj_data["Type"],
             analysis=obj_data.get("Analysis", None),
             properties=obj_data.get("Properties", {}),
         )
-        rpc_request_queue.put(lambda: self._create_object_gui(doc_name, obj))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "object_name": obj.name}
-        else:
-            return {"success": False, "error": res}
 
-    def edit_object(self, doc_name: str, obj_name: str, properties: dict[str, Any]) -> dict[str, Any]:
+        def task():
+            ok = self._create_object_gui(doc_name, obj)
+            return {"success": ok is True, "object_name": obj.name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self.TIMEOUT)
+
+    def edit_object(self, doc_name: str, obj_name: str, properties: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
         obj = Object(
             name=obj_name,
             properties=properties.get("Properties", {}),
         )
-        rpc_request_queue.put(lambda: self._edit_object_gui(doc_name, obj))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "object_name": obj.name}
-        else:
-            return {"success": False, "error": res}
 
-    def delete_object(self, doc_name: str, obj_name: str):
-        rpc_request_queue.put(lambda: self._delete_object_gui(doc_name, obj_name))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "object_name": obj_name}
-        else:
-            return {"success": False, "error": res}
+        def task():
+            ok = self._edit_object_gui(doc_name, obj)
+            return {"success": ok is True, "object_name": obj.name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self.TIMEOUT)
 
-    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600) -> dict[str, Any]:
+    def delete_object(self, doc_name: str, obj_name: str, request_id: str | None = None):
+        def task():
+            ok = self._delete_object_gui(doc_name, obj_name)
+            return {"success": ok is True, "object_name": obj_name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self.TIMEOUT)
+
+    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600, request_id: str | None = None) -> dict[str, Any]:
         """Run the CalculiX solver on an existing Fem::FemAnalysis and return summary results."""
         try:
             timeout_s = int(timeout)
         except (TypeError, ValueError):
             return {"success": False, "error": f"invalid timeout: {timeout!r}"}
-        rpc_request_queue.put(lambda: self._run_fem_analysis_gui(doc_name, analysis_name))
-        try:
-            res = rpc_response_queue.get(timeout=timeout_s)
-        except queue.Empty:
-            return {"success": False, "error": f"solver did not return within {timeout_s}s (still running on the GUI thread)"}
-        if isinstance(res, dict):
-            return res
-        return {"success": False, "error": str(res)}
 
-    def execute_code(self, code: str) -> dict[str, Any]:
+        def task():
+            return self._run_fem_analysis_gui(doc_name, analysis_name)
+        return self._tracked_call(request_id, task, timeout_s)
+
+    def execute_code(self, code: str, request_id: str | None = None) -> dict[str, Any]:
         # The output buffer MUST live inside the closure — otherwise two
         # concurrent execute_code requests share the same StringIO and the
         # caller receives a mix of both runs' stdout.
@@ -403,28 +455,20 @@ class FreeCADRPC:
                 with contextlib.redirect_stdout(buf):
                     exec(code, globals())
                 FreeCAD.Console.PrintMessage("Python code executed successfully.\n")
-                return {"success": True, "message": buf.getvalue()}
+                return {
+                    "success": True,
+                    "message": "Python code execution scheduled. \nOutput: " + buf.getvalue(),
+                }
             except Exception as e:
                 FreeCAD.Console.PrintError(
                     f"Error executing Python code: {e}\n"
                 )
-                return {"success": False, "error": f"Error executing Python code: {e}\n", "output": buf.getvalue()}
-
-        rpc_request_queue.put(task)
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if not isinstance(res, dict):
-            # Defensive: task should always return a dict now, but tolerate
-            # older shape in case of partial upgrades.
-            return {"success": False, "error": str(res)}
-        if res.get("success"):
-            return {
-                "success": True,
-                "message": "Python code execution scheduled. \nOutput: " + res.get("message", ""),
-            }
-        err = res.get("error", "")
-        out = res.get("output", "")
-        msg = err + (("\nOutput: " + out) if out else "")
-        return {"success": False, "error": msg}
+                return {
+                    "success": False,
+                    "error": f"Error executing Python code: {e}\n",
+                    "output": buf.getvalue(),
+                }
+        return self._tracked_call(request_id, task, self.TIMEOUT)
 
     def get_objects(self, doc_name):
         doc = FreeCAD.getDocument(doc_name)
@@ -444,13 +488,11 @@ class FreeCADRPC:
         else:
             return None
 
-    def insert_part_from_library(self, relative_path):
-        rpc_request_queue.put(lambda: self._insert_part_from_library(relative_path))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "message": "Part inserted from library."}
-        else:
-            return {"success": False, "error": res}
+    def insert_part_from_library(self, relative_path, request_id: str | None = None):
+        def task():
+            ok = self._insert_part_from_library(relative_path)
+            return {"success": ok is True, "message": "Part inserted from library." if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self.TIMEOUT)
 
     def list_documents(self):
         return list(FreeCAD.listDocuments().keys())

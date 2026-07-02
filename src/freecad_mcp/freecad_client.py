@@ -98,23 +98,32 @@ class FreeCADConnection:
     def ping(self) -> bool:
         return self.server.ping()
 
-    def create_document(self, name: str) -> dict[str, Any]:
-        return self.server.create_document(name)
+    def cancel_request(self, request_id: str) -> dict[str, Any]:
+        """Cooperatively cancel a previously-submitted request by id.
 
-    def create_object(self, doc_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
-        return self.server.create_object(doc_name, obj_data)
+        The id must be the same string passed to the originating call. The
+        cancel only takes effect if the GUI worker has not yet started the
+        task; once the handler is running it cannot be interrupted.
+        """
+        return self.server.cancel_request(request_id)
 
-    def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
-        return self.server.edit_object(doc_name, obj_name, obj_data)
+    def create_document(self, name: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.create_document(name, request_id)
 
-    def delete_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
-        return self.server.delete_object(doc_name, obj_name)
+    def create_object(self, doc_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
+        return self.server.create_object(doc_name, obj_data, request_id)
 
-    def insert_part_from_library(self, relative_path: str) -> dict[str, Any]:
-        return self.server.insert_part_from_library(relative_path)
+    def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
+        return self.server.edit_object(doc_name, obj_name, obj_data, request_id)
 
-    def execute_code(self, code: str) -> dict[str, Any]:
-        return self.server.execute_code(code)
+    def delete_object(self, doc_name: str, obj_name: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.delete_object(doc_name, obj_name, request_id)
+
+    def insert_part_from_library(self, relative_path: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.insert_part_from_library(relative_path, request_id)
+
+    def execute_code(self, code: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.execute_code(code, request_id)
 
     def get_active_screenshot(
         self,
@@ -146,5 +155,5 @@ class FreeCADConnection:
     def list_documents(self) -> list[str]:
         return self.server.list_documents()
 
-    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600) -> dict[str, Any]:
-        return self.server.run_fem_analysis(doc_name, analysis_name, timeout)
+    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.run_fem_analysis(doc_name, analysis_name, timeout, request_id)

@@ -107,6 +107,11 @@ def validate_allowed_ips(allowed_ips_str):
        commas, no empty entries between commas, not blank).
     2. Each individual entry is a valid IPv4/IPv6 address or CIDR subnet
        (validated via the stdlib ``ipaddress`` module).
+    3. The entry does **not** cover the whole address space
+       (``0.0.0.0/0`` or ``::/0``) — that would expose the RPC server to the
+       entire internet if remote connections are enabled, which is almost
+       never what the user intended. The caller can override via
+       ``allow_insecure_wildcards=True`` if they really mean it.
     """
     errors = []
 
@@ -123,10 +128,17 @@ def validate_allowed_ips(allowed_ips_str):
     for entry in allowed_ips_str.split(","):
         entry = entry.strip()
         try:
-            ipaddress.ip_network(entry, strict=False)
-            valid.append(entry)
+            network = ipaddress.ip_network(entry, strict=False)
         except ValueError:
             errors.append(f"Invalid IP/subnet: '{entry}'")
+            continue
+        if network.prefixlen == 0:
+            errors.append(
+                f"Refusing insecure wildcard '{entry}' (matches every IP). "
+                "List concrete subnets instead, e.g. 192.168.0.0/16."
+            )
+            continue
+        valid.append(entry)
     return valid, errors
 
 

@@ -372,6 +372,7 @@ def get_view(
     width: int | None = None,
     height: int | None = None,
     focus_object: str | None = None,
+    image_format: str = "png",
 ) -> list[ImageContent | TextContent]:
     """Get a screenshot of the active view.
 
@@ -390,11 +391,13 @@ def get_view(
         width: The width of the screenshot in pixels. If not specified, uses the viewport width.
         height: The height of the screenshot in pixels. If not specified, uses the viewport height.
         focus_object: The name of the object to focus on. If not specified, fits all objects in the view.
+        image_format: One of ``png`` (default, no extra dependency), ``jpeg``/``jpg``,
+            or ``webp``. JPEG/WebP require Pillow on the FreeCAD host.
 
     Returns:
-        A screenshot of the active view.
+        A screenshot of the active view in the requested format.
     """
-    return get_view_operation(get_freecad_connection(), view_name, width, height, focus_object)
+    return get_view_operation(get_freecad_connection(), view_name, width, height, focus_object, image_format)
 
 
 @mcp.tool()

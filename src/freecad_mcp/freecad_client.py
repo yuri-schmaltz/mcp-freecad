@@ -1,5 +1,8 @@
+import base64
+import gzip
 import logging
 import os
+import socket
 import xmlrpc.client
 from typing import Any
 
@@ -129,6 +132,7 @@ class FreeCADConnection:
         width: int | None = None,
         height: int | None = None,
         focus_object: str | None = None,
+        image_format: str = "png",
     ) -> str | None:
         try:
             result = self.server.execute_code(_SCREENSHOT_SUPPORT_CHECK)  # type: ignore[union-attr]
@@ -139,7 +143,7 @@ class FreeCADConnection:
                 logger.info("Screenshot unavailable in current view (likely Spreadsheet or TechDraw view)")
                 return None
 
-            return self.server.get_active_screenshot(view_name, width, height, focus_object)  # type: ignore[return-value]
+            return self.server.get_active_screenshot(view_name, width, height, focus_object, image_format)  # type: ignore[return-value]
         except Exception as e:
             logger.error(f"Error getting screenshot: {e}")
             return None
@@ -173,6 +177,51 @@ class FreeCADConnection:
 
     def export_object(self, doc_name: str, obj_name: str, path: str, fmt: str | None = None) -> dict[str, Any]:
         return self.server.export_object(doc_name, obj_name, path, fmt)  # type: ignore[return-value]
+
+    def export_object_bytes(self, doc_name: str, obj_name: str, fmt: str = "stl") -> dict[str, Any]:
+        """Export an object and return its bytes, optionally gzip-compressed.
+
+        The XML-RPC ``export_object`` method writes to disk; this helper
+        reads the file back and, if it is large (>FREECAD_MCP_GZIP_MIN),
+        returns a gzipped base64 string. Use ``gzip.decompress`` on the
+        receiver to get the original bytes.
+
+        Smaller files are returned raw (base64). Either way the result
+        has a ``b64_data`` field and a ``compressed`` boolean.
+        """
+        import tempfile
+        # Threshold in bytes above which we apply gzip. Default 64 KB.
+        threshold = int(os.environ.get("FREECAD_MCP_GZIP_MIN", str(64 * 1024)))
+        with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            res = self.server.export_object(doc_name, obj_name, tmp_path, fmt)  # type: ignore[union-attr]
+            if not isinstance(res, dict) or not res.get("success"):
+                return res if isinstance(res, dict) else {"success": False, "error": "unknown"}
+            with open(tmp_path, "rb") as f:
+                raw = f.read()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        if len(raw) >= threshold:
+            compressed = gzip.compress(raw, compresslevel=6)
+            return {
+                "success": True,
+                "format": fmt,
+                "size_bytes": len(raw),
+                "compressed": True,
+                "b64_data": base64.b64encode(compressed).decode("ascii"),
+            }
+        return {
+            "success": True,
+            "format": fmt,
+            "size_bytes": len(raw),
+            "compressed": False,
+            "b64_data": base64.b64encode(raw).decode("ascii"),
+        }
 
     def get_active_view(self) -> dict[str, Any]:
         return self.server.get_active_view()  # type: ignore[return-value]

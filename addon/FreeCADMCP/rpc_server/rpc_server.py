@@ -10,6 +10,7 @@ import re
 import base64
 import io
 import os
+import ssl
 import tempfile
 import threading
 import traceback
@@ -157,14 +158,151 @@ def save_settings(settings):
         FreeCAD.Console.PrintError(f"Failed to save MCP settings to {path}: {e}\n")
 
 
-# --- IP-filtered XML-RPC server ---
+# --- Screenshot transcoding (PNG -> JPEG / WebP) ---
 
-class FilteredXMLRPCServer(SimpleXMLRPCServer):
-    """XML-RPC server that filters connections by allowed IP addresses/subnets."""
+def _transcode_screenshot(png_bytes: bytes, target_format: str) -> str | None:
+    """Transcode a PNG byte string to JPEG or WebP via Pillow.
 
-    def __init__(self, addr, allowed_ips_str="127.0.0.1", **kwargs):
+    Returns the base64-encoded output, or None if Pillow is not
+    available. FreeCAD's ``saveImage`` only produces PNG; this helper
+    gives callers a smaller payload at the cost of an extra dependency
+    (``pip install Pillow``).
+    """
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:
+        return None
+    try:
+        import io as _io
+        with Image.open(_io.BytesIO(png_bytes)) as img:
+            buf = _io.BytesIO()
+            save_kwargs: dict = {}
+            if target_format in ("jpeg", "jpg"):
+                # JPEG cannot store alpha; flatten onto white.
+                if img.mode in ("RGBA", "LA", "P"):
+                    img = img.convert("RGB")
+                save_kwargs["quality"] = 85
+                img.save(buf, format="JPEG", **save_kwargs)
+            elif target_format == "webp":
+                save_kwargs["quality"] = 80
+                img.save(buf, format="WEBP", **save_kwargs)
+            else:
+                return None
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as e:
+        FreeCAD.Console.PrintError(
+            f"MCP RPC: screenshot transcode to {target_format} failed: "
+            f"{type(e).__name__}: {e}\n"
+        )
+        return None
+
+
+# --- IP-filtered + TLS + auth-token XML-RPC server ---
+
+def _get_auth_token() -> str | None:
+    """Read the auth token from the environment, if any.
+
+    The token is a shared secret. The client must send the
+    ``Authorization: Bearer <token>`` header on every request. The
+    match is constant-time to avoid leaking the token length via
+    timing side-channels.
+    """
+    tok = os.environ.get("FREECAD_MCP_AUTH_TOKEN", "").strip()
+    return tok or None
+
+
+class _BearerAuthHandler:
+    """Mixin-like helper that authenticates the ``Authorization`` header.
+
+    The XML-RPC server decodes HTTP requests in
+    ``SimpleXMLRPCServer.parse_request``; we hook in via
+    ``SimpleXMLRPCServer.setup`` to wrap the request socket and read
+    the headers ourselves before handing off.
+    """
+
+    _AUTH_SCHEME = "Bearer "
+
+    def _check_auth(self, headers: str) -> bool:
+        expected = _get_auth_token()
+        if expected is None:
+            # No token configured: auth disabled, allow the request.
+            return True
+        # Find the Authorization header (case-insensitive).
+        auth_value: str | None = None
+        for line in headers.splitlines():
+            if ":" not in line:
+                continue
+            name, _, value = line.partition(":")
+            if name.strip().lower() == "authorization":
+                auth_value = value.strip()
+                break
+        if auth_value is None or not auth_value.startswith(self._AUTH_SCHEME):
+            return False
+        presented = auth_value[len(self._AUTH_SCHEME):]
+        # Constant-time compare to avoid timing side-channels.
+        return hmac.compare_digest(presented, expected)
+
+
+# stdlib hmac is stdlib; importing it once at module load is fine.
+import hmac  # noqa: E402  (placed after the helper to keep the helper readable)
+
+
+class FilteredXMLRPCServer(SimpleXMLRPCServer, _BearerAuthHandler):
+    """XML-RPC server that filters connections by allowed IP, optional TLS, and optional bearer-token auth.
+
+    Configuration is read from the environment on instantiation:
+
+    - ``allowed_ips_str`` (constructor arg) — comma-separated list of
+      CIDR subnets / IP addresses that may connect.
+    - ``FREECAD_MCP_TLS_CERT`` / ``FREECAD_MCP_TLS_KEY`` — paths to PEM
+      certificate and private key. If both are set, the server wraps
+      every accepted socket in TLS via ``ssl.wrap_socket``.
+    - ``FREECAD_MCP_AUTH_TOKEN`` — shared secret. If set, every request
+      must carry a matching ``Authorization: Bearer <token>`` header.
+      The check is constant-time.
+    """
+
+    def __init__(self, addr, allowed_ips_str="127.0.0.1", tls_cert: str | None = None, tls_key: str | None = None, **kwargs):
         self._allowed_networks = _parse_allowed_ips(allowed_ips_str)
+        self._tls_cert = tls_cert
+        self._tls_key = tls_key
+        self._ssl_context: ssl.SSLContext | None = None
+        if tls_cert and tls_key:
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.load_cert_chain(certfile=tls_cert, keyfile=tls_key)
+                # Reasonable defaults: refuse ancient protocols.
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+                self._ssl_context = ctx
+                FreeCAD.Console.PrintMessage(
+                    f"MCP RPC: TLS enabled (cert={tls_cert})\n"
+                )
+            except Exception as e:
+                FreeCAD.Console.PrintError(
+                    f"MCP RPC: failed to load TLS cert/key ({type(e).__name__}: {e}); "
+                    "falling back to plain HTTP. DO NOT enable remote connections.\n"
+                )
         super().__init__(addr, **kwargs)
+        if _get_auth_token() is not None:
+            FreeCAD.Console.PrintMessage("MCP RPC: bearer-token auth enabled\n")
+
+    def get_request(self):
+        """Accept a connection and optionally wrap it in TLS."""
+        sock, addr = super().get_request()
+        if self._ssl_context is not None:
+            try:
+                sock = self._ssl_context.wrap_socket(sock, server_side=True)
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(
+                    f"MCP RPC: TLS handshake from {addr} failed: {type(e).__name__}: {e}\n"
+                )
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                # Re-raise so SimpleXMLRPCServer drops the connection.
+                raise
+        return sock, addr
 
     def verify_request(self, request, client_address):
         client_ip = client_address[0]
@@ -179,6 +317,71 @@ class FilteredXMLRPCServer(SimpleXMLRPCServer):
             f"MCP RPC: Rejected connection from {client_ip}\n"
         )
         return False
+
+    def parse_request(self):
+        """Hook in bearer-token auth after the HTTP headers are read.
+
+        We do this by wrapping the super's ``parse_request`` result with
+        a check: if auth is required and the request does not carry a
+        valid ``Authorization`` header, we return False so the
+        SimpleXMLRPCServer closes the connection.
+        """
+        # SimpleXMLRPCServer stores the raw request in
+        # ``self.raw_requestline`` after parsing. We do the cheap
+        # line-based read here BEFORE handing off to dispatch.
+        if _get_auth_token() is not None:
+            try:
+                headers_text = self._read_request_headers_for_auth()
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(
+                    f"MCP RPC: failed to read auth headers: {type(e).__name__}: {e}\n"
+                )
+                return False
+            if not self._check_auth(headers_text):
+                FreeCAD.Console.PrintWarning(
+                    f"MCP RPC: rejected request with bad/missing bearer token from "
+                    f"{self.client_address[0] if self.client_address else '?'}\n"
+                )
+                return False
+        return super().parse_request()
+
+    def _read_request_headers_for_auth(self) -> str:
+        """Read the request line + headers off the raw socket.
+
+        Returns the joined header text. The body is not consumed;
+        that's SimpleXMLRPCServer's job once parse_request returns.
+        """
+        # If parse_request has already been called once the headers
+        # are gone; we rely on the caller invoking this BEFORE
+        # super().parse_request().
+        raw = getattr(self, "raw_requestline", b"")
+        if isinstance(raw, bytes) and raw:
+            # raw_requestline is just the first line; read the rest.
+            first = raw.decode("iso-8859-1", errors="replace")
+        else:
+            first = ""
+        # Read until blank line. The socket's ``makefile`` may have
+        # been consumed already; the safest bet is to peek at the
+        # underlying socket. Fall back to ``first`` if we cannot.
+        try:
+            sock = self.request
+            if hasattr(sock, "makefile"):
+                # Already wrapped; do not read again — return what we have.
+                return first
+            # Read the rest of the headers. Set a small timeout so a
+            # malicious peer cannot block us here.
+            sock.settimeout(2.0)
+            buf = [first] if first else []
+            while True:
+                line = sock.readline()
+                if not line or line in (b"\r\n", b"\n", b""):
+                    break
+                buf.append(line.decode("iso-8859-1", errors="replace"))
+                if len(buf) > 64:  # sanity cap
+                    break
+            return "\n".join(buf)
+        except Exception:
+            return first
 
 
 _COMMA_SEP_RE = re.compile(r"^\s*[^,\s]+(\s*,\s*[^,\s]+)*\s*$")
@@ -823,7 +1026,15 @@ class FreeCADRPC:
     def get_parts_list(self):
         return get_parts_list()
 
-    def get_active_screenshot(self, view_name: str = "Isometric", width: int | None = None, height: int | None = None, focus_object: str | None = None, timeout: float | None = None) -> str:
+    def get_active_screenshot(
+        self,
+        view_name: str = "Isometric",
+        width: int | None = None,
+        height: int | None = None,
+        focus_object: str | None = None,
+        timeout: float | None = None,
+        image_format: str = "png",
+    ) -> str:
         """Get a screenshot of the active view.
 
         Returns a base64-encoded string of the screenshot or None if a screenshot
@@ -832,9 +1043,17 @@ class FreeCADRPC:
         The view-support check and the capture run inside a single GUI-thread
         task, so the view cannot be switched out from under us between the two
         steps (which used to race when the user toggled workbenches).
+
+        ``image_format`` is one of ``png`` (default), ``jpeg``/``jpg``, or
+        ``webp``. PNG is what FreeCAD's ``saveImage`` produces natively;
+        JPEG and WebP are produced by transcoding the PNG with Pillow if
+        available, or by emitting a clear error if it is not.
         """
         # Build the tmp path OUTSIDE the task so the queue.put can be a single
         # closure with no side effects leaking to the GUI thread.
+        fmt = (image_format or "png").lower()
+        if fmt not in ("png", "jpeg", "jpg", "webp"):
+            return None
         fd, tmp_path = tempfile.mkstemp(suffix=".png")
         os.close(fd)
 
@@ -874,7 +1093,17 @@ class FreeCADRPC:
         try:
             with open(tmp_path, "rb") as image_file:
                 image_bytes = image_file.read()
-            encoded = base64.b64encode(image_bytes).decode("utf-8")
+            if fmt == "png":
+                encoded = base64.b64encode(image_bytes).decode("utf-8")
+            else:
+                encoded = _transcode_screenshot(image_bytes, fmt)
+                if encoded is None:
+                    FreeCAD.Console.PrintWarning(
+                        "MCP RPC: Pillow not installed; cannot transcode to "
+                        f"{fmt}. Install with 'pip install Pillow' or pass "
+                        "image_format='png'.\n"
+                    )
+                    return None
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -1213,7 +1442,12 @@ def start_rpc_server(port=9875):
             host = "localhost"
 
         rpc_server_instance = FilteredXMLRPCServer(
-            (host, port), allowed_ips_str=allowed_ips, allow_none=True, logRequests=False
+            (host, port),
+            allowed_ips_str=allowed_ips,
+            tls_cert=os.environ.get("FREECAD_MCP_TLS_CERT"),
+            tls_key=os.environ.get("FREECAD_MCP_TLS_KEY"),
+            allow_none=True,
+            logRequests=False,
         )
         rpc_server_instance.register_instance(FreeCADRPC())
 

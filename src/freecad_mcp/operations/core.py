@@ -122,11 +122,21 @@ def get_view_operation(
     width: int | None = None,
     height: int | None = None,
     focus_object: str | None = None,
+    image_format: str = "png",
 ) -> ToolResponse:
-    screenshot = freecad.get_active_screenshot(view_name, width, height, focus_object)
+    screenshot = freecad.get_active_screenshot(view_name, width, height, focus_object, image_format)
     if screenshot is not None:
-        return [ImageContent(type="image", data=screenshot, mimeType="image/png")]
-    return text_response("Cannot get screenshot in the current view type (such as TechDraw or Spreadsheet)")
+        mime = {
+            "png": "image/png",
+            "jpeg": "image/jpeg",
+            "jpg": "image/jpeg",
+            "webp": "image/webp",
+        }.get((image_format or "png").lower(), "image/png")
+        return [ImageContent(type="image", data=screenshot, mimeType=mime)]
+    return text_response(
+        f"Cannot get screenshot in the current view type or format {image_format!r} "
+        "(such as TechDraw or Spreadsheet; or Pillow is not installed for JPEG/WebP)"
+    )
 
 
 @safe_operation

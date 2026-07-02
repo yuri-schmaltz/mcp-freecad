@@ -21,6 +21,8 @@ from PySide import QtCore, QtWidgets
 
 from .parts_library import get_parts_list, insert_part_from_library
 from .serialize import serialize_object
+from ._fem_workdir import keep_fem_workdir as _keep_fem_workdir
+from ._fem_workdir import safe_rmtree as _safe_rmtree
 
 rpc_server_thread = None
 rpc_server_instance = None
@@ -659,6 +661,17 @@ class FreeCADRPC:
                 "traceback": traceback.format_exc(),
                 "working_dir": work_dir,
             }
+        finally:
+            # Clean up the solver scratch directory unless the operator asked
+            # to keep it (via env var) for post-mortem inspection. CCX writes
+            # hundreds of MB per run; without this every solve leaks disk.
+            if work_dir is not None and not _keep_fem_workdir():
+                _safe_rmtree(
+                    work_dir,
+                    on_warning=lambda msg: FreeCAD.Console.PrintWarning(
+                        f"MCP RPC: {msg}\n"
+                    ),
+                )
 
     def _delete_object_gui(self, doc_name: str, obj_name: str):
         doc = FreeCAD.getDocument(doc_name)

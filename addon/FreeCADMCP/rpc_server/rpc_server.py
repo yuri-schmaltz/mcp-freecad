@@ -14,16 +14,23 @@ import tempfile
 import threading
 import traceback
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 from xmlrpc.server import SimpleXMLRPCServer
 
 from PySide import QtCore, QtWidgets
 
 from .parts_library import get_parts_list, insert_part_from_library
 from .serialize import serialize_object
+from ._fem_workdir import keep_fem_workdir as _keep_fem_workdir
+from ._fem_workdir import safe_rmtree as _safe_rmtree
+from ._request_tracking import get_default_tracker as _get_tracker
 
 rpc_server_thread = None
 rpc_server_instance = None
+
+# Captured once when the module loads; health_check uses it to report uptime.
+import time as _module_load_time
+_SERVER_START_TIME = _module_load_time.time()
 
 
 # --- Settings persistence ---
@@ -37,8 +44,90 @@ _DEFAULT_SETTINGS = {
 }
 
 
-def _get_settings_path():
-    return os.path.join(FreeCAD.getUserAppDataDir(), _SETTINGS_FILENAME)
+def _writable_dir(path: str) -> bool:
+    """Return True if *path* exists and is writable by the current user."""
+    if not path:
+        return False
+    if not os.path.isdir(path):
+        return False
+    # Probe with a touch-then-remove of a temp filename.
+    try:
+        fd, probe = tempfile.mkstemp(prefix=".mcp_write_probe_", dir=path)
+        os.close(fd)
+        os.unlink(probe)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def _ensure_dir(path: str) -> bool:
+    """Create *path* (and parents) if it doesn't exist. Returns True on success."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def _resolve_settings_dir() -> str:
+    """Pick a directory that exists and is writable for the settings file.
+
+    Tries in order:
+
+    1. ``FreeCAD.getUserAppDataDir()`` — the canonical FreeCAD user dir.
+       If it exists but is read-only (sandboxed installs, portable mode on
+       Windows, CI), we fall back.
+    2. ``$XDG_CONFIG_HOME/freecad-mcp`` (Linux) or ``$HOME/.config/freecad-mcp``.
+    3. ``tempfile.gettempdir()/freecad-mcp`` as a last resort.
+
+    Returns the first directory that exists and is writable, or the temp
+    fallback even if not writable (so the caller at least has a path to
+    report; ``save_settings`` will still surface the I/O error).
+    """
+    # 1. FreeCAD user data dir.
+    try:
+        primary = FreeCAD.getUserAppDataDir()
+    except Exception as e:
+        FreeCAD.Console.PrintWarning(
+            f"MCP settings: FreeCAD.getUserAppDataDir() raised {type(e).__name__}: {e}\n"
+        )
+        primary = None
+    if primary and _ensure_dir(primary) and _writable_dir(primary):
+        return primary
+
+    if primary:
+        FreeCAD.Console.PrintWarning(
+            f"MCP settings: {primary!r} is not writable; falling back.\n"
+        )
+
+    # 2. XDG / HOME config.
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    candidates = []
+    if xdg:
+        candidates.append(os.path.join(xdg, "freecad-mcp"))
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        candidates.append(os.path.join(home, ".config", "freecad-mcp"))
+        candidates.append(os.path.join(home, "freecad-mcp"))
+
+    for c in candidates:
+        if _ensure_dir(c) and _writable_dir(c):
+            return c
+
+    # 3. Temp fallback (last resort).
+    fallback = os.path.join(tempfile.gettempdir(), "freecad-mcp")
+    _ensure_dir(fallback)
+    return fallback
+
+
+def _get_settings_path() -> str:
+    """Return the absolute path to the settings JSON file.
+
+    Resolved lazily on each call so a deployment that gains write access
+    mid-session (e.g. user fixes a permission) starts using the proper
+    location without a restart.
+    """
+    return os.path.join(_resolve_settings_dir(), _SETTINGS_FILENAME)
 
 
 def load_settings():
@@ -53,17 +142,19 @@ def load_settings():
                     settings[key] = value
             return settings
         except Exception as e:
-            FreeCAD.Console.PrintWarning(f"Failed to load MCP settings: {e}\n")
+            FreeCAD.Console.PrintWarning(f"Failed to load MCP settings from {path}: {e}\n")
     return dict(_DEFAULT_SETTINGS)
 
 
 def save_settings(settings):
     path = _get_settings_path()
     try:
+        # Make sure the directory exists (idempotent) before opening for write.
+        _ensure_dir(os.path.dirname(path))
         with open(path, "w") as f:
             json.dump(settings, f, indent=2)
     except Exception as e:
-        FreeCAD.Console.PrintError(f"Failed to save MCP settings: {e}\n")
+        FreeCAD.Console.PrintError(f"Failed to save MCP settings to {path}: {e}\n")
 
 
 # --- IP-filtered XML-RPC server ---
@@ -105,6 +196,11 @@ def validate_allowed_ips(allowed_ips_str):
        commas, no empty entries between commas, not blank).
     2. Each individual entry is a valid IPv4/IPv6 address or CIDR subnet
        (validated via the stdlib ``ipaddress`` module).
+    3. The entry does **not** cover the whole address space
+       (``0.0.0.0/0`` or ``::/0``) — that would expose the RPC server to the
+       entire internet if remote connections are enabled, which is almost
+       never what the user intended. The caller can override via
+       ``allow_insecure_wildcards=True`` if they really mean it.
     """
     errors = []
 
@@ -121,10 +217,17 @@ def validate_allowed_ips(allowed_ips_str):
     for entry in allowed_ips_str.split(","):
         entry = entry.strip()
         try:
-            ipaddress.ip_network(entry, strict=False)
-            valid.append(entry)
+            network = ipaddress.ip_network(entry, strict=False)
         except ValueError:
             errors.append(f"Invalid IP/subnet: '{entry}'")
+            continue
+        if network.prefixlen == 0:
+            errors.append(
+                f"Refusing insecure wildcard '{entry}' (matches every IP). "
+                "List concrete subnets instead, e.g. 192.168.0.0/16."
+            )
+            continue
+        valid.append(entry)
     return valid, errors
 
 
@@ -190,6 +293,10 @@ def process_gui_tasks():
        queue is never starved.
     3. The ``_DISPATCH_SHUTDOWN`` sentinel lets ``stop_rpc_server`` exit
        the loop cleanly without leaving an orphan QTimer chain.
+    4. The ``finally`` block ALWAYS reschedules itself, even if something
+       outside ``task()`` raises (e.g. while draining the queue itself or
+       while scheduling the next tick). Without this a single dispatcher
+       exception would silently kill the entire RPC pipeline.
     """
     try:
         while not rpc_request_queue.empty():
@@ -209,8 +316,20 @@ def process_gui_tasks():
                 rpc_response_queue.put("GUI handler returned None")
             else:
                 rpc_response_queue.put(res)
+    except Exception as e:
+        # Anything raised OUTSIDE the per-task try (e.g. queue.empty race,
+        # _DISPATCH_SHUTDOWN comparison failure) must not abort the loop.
+        FreeCAD.Console.PrintError(
+            f"MCP RPC: process_gui_tasks dispatcher raised {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}"
+        )
     finally:
-        QtCore.QTimer.singleShot(500, process_gui_tasks)
+        try:
+            QtCore.QTimer.singleShot(500, process_gui_tasks)
+        except Exception as e:
+            FreeCAD.Console.PrintError(
+                f"MCP RPC: failed to reschedule process_gui_tasks: {type(e).__name__}: {e}\n"
+            )
 
 
 @dataclass
@@ -222,8 +341,25 @@ class Object:
 
 
 def set_object_property(
-    doc: FreeCAD.Document, obj: FreeCAD.DocumentObject, properties: dict[str, Any]
-):
+    doc: FreeCAD.Document,
+    obj: FreeCAD.DocumentObject,
+    properties: dict[str, Any],
+    on_warning: Callable[[str, str], None] | None = None,
+) -> list[tuple[str, str]]:
+    """Apply *properties* to *obj* and return a list of per-property errors.
+
+    Each error is returned as ``(property_name, error_message)`` so the
+    caller (typically the MCP layer) can decide whether to surface the
+    partial failure. The function never raises for per-property failures
+    (one bad property does not poison the rest) but propagates the
+    document-level exceptions because those indicate a broken state we
+    cannot continue from.
+
+    ``on_warning`` is an optional callback invoked as
+    ``on_warning(property, message)`` for each individual failure —
+    in production this is wired to ``FreeCAD.Console.PrintError``.
+    """
+    errors: list[tuple[str, str]] = []
     for prop, val in properties.items():
         try:
             if prop in obj.PropertiesList:
@@ -296,96 +432,366 @@ def set_object_property(
                 setattr(obj, prop, val)
 
         except Exception as e:
-            FreeCAD.Console.PrintError(f"Property '{prop}' assignment error: {e}\n")
+            msg = f"{type(e).__name__}: {e}"
+            errors.append((prop, msg))
+            if on_warning is not None:
+                on_warning(prop, msg)
+            else:
+                FreeCAD.Console.PrintError(f"Property '{prop}' assignment error: {e}\n")
+    return errors
 
 
 class FreeCADRPC:
-    """RPC server for FreeCAD"""
-    TIMEOUT = 10
+    """RPC server for FreeCAD.
+
+    The per-operation default timeouts are tuned for typical CAD work and
+    can be overridden at three levels (lowest priority first):
+
+    1. The ``TIMEOUT`` class constant (10s — kept for back-compat).
+    2. The ``FREECAD_MCP_DEFAULT_RPC_TIMEOUT`` env var (single number,
+       applies to every operation that does not declare its own).
+    3. The ``FREECAD_MCP_RPC_TIMEOUTS`` env var (JSON object keyed by
+       operation name, e.g. ``{"create_object": 120, "run_fem_analysis":
+       900}``).
+    4. The per-call ``timeout`` argument the MCP client passes through
+       (highest priority; falls back to 1/2/3).
+
+    A short timeout on a slow operation will produce
+    ``{"success": false, "error": "no response within Xs ..."}`` which
+    the caller can recognise and retry with a longer deadline.
+    """
+
+    TIMEOUT = 10  # backwards-compat default; see PER_OPERATION_TIMEOUTS.
+
+    PER_OPERATION_TIMEOUTS: dict[str, float] = {
+        "create_document": 30.0,
+        "create_object": 60.0,         # mesh generation can be slow
+        "edit_object": 60.0,
+        "delete_object": 30.0,
+        "execute_code": 30.0,
+        "insert_part_from_library": 30.0,
+        "run_fem_analysis": 600.0,
+        "get_active_screenshot": 30.0,
+        "cancel_request": 5.0,
+    }
+
+    def __init__(self) -> None:
+        # Apply env overrides. Errors are non-fatal — we keep the in-code
+        # defaults if the env vars are malformed.
+        import copy
+        import json as _json
+
+        # IMPORTANT: copy the class-level dict per instance so env overrides
+        # applied at instance time do not leak back into the class attribute
+        # (and contaminate other instances constructed later).
+        self.PER_OPERATION_TIMEOUTS = copy.deepcopy(self.PER_OPERATION_TIMEOUTS)
+
+        default = os.environ.get("FREECAD_MCP_DEFAULT_RPC_TIMEOUT")
+        if default:
+            try:
+                self.TIMEOUT = float(default)
+            except (TypeError, ValueError):
+                FreeCAD.Console.PrintWarning(
+                    f"MCP RPC: invalid FREECAD_MCP_DEFAULT_RPC_TIMEOUT={default!r}, "
+                    "ignoring.\n"
+                )
+
+        per_op_raw = os.environ.get("FREECAD_MCP_RPC_TIMEOUTS")
+        if per_op_raw:
+            try:
+                parsed = _json.loads(per_op_raw)
+                if isinstance(parsed, dict):
+                    for op, value in parsed.items():
+                        try:
+                            self.PER_OPERATION_TIMEOUTS[str(op)] = float(value)
+                        except (TypeError, ValueError):
+                            FreeCAD.Console.PrintWarning(
+                                f"MCP RPC: invalid timeout for op {op!r}: {value!r}, ignoring.\n"
+                            )
+            except _json.JSONDecodeError as e:
+                FreeCAD.Console.PrintWarning(
+                    f"MCP RPC: invalid FREECAD_MCP_RPC_TIMEOUTS JSON: {e}, ignoring.\n"
+                )
+
+    def _timeout_for(self, operation: str, override: float | None = None) -> float:
+        """Resolve the effective timeout for *operation*.
+
+        ``override`` (when positive) wins over everything.
+        """
+        if override is not None:
+            try:
+                v = float(override)
+                if v > 0:
+                    return v
+            except (TypeError, ValueError):
+                pass
+        return float(self.PER_OPERATION_TIMEOUTS.get(operation, self.TIMEOUT))
 
     def ping(self):
         return True
 
-    def create_document(self, name="New_Document"):
-        rpc_request_queue.put(lambda: self._create_document_gui(name))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "document_name": name}
-        else:
-            return {"success": False, "error": res}
+    def health_check(self) -> dict[str, Any]:
+        """Lightweight liveness/readiness probe for monitoring.
 
-    def create_object(self, doc_name, obj_data: dict[str, Any]):
+        Returns the server's uptime, queue sizes, per-operation call
+        counts, and the resolved settings directory. Always succeeds
+        (never raises) so an external monitor can detect liveness
+        without side effects.
+        """
+        import time as _time
+        now = _time.time()
+        tracker = _get_tracker()
+        with _rpc_lock:
+            running = rpc_server_instance is not None
+        return {
+            "success": True,
+            "uptime_seconds": round(now - _SERVER_START_TIME, 3),
+            "rpc_server_running": running,
+            "request_queue_size": rpc_request_queue.qsize(),
+            "response_queue_size": rpc_response_queue.qsize(),
+            "cached_responses": len(tracker.cached_ids()),
+            "pending_cancellations": len(tracker.pending_cancellations()),
+            "settings_dir": _get_settings_path(),
+        }
+
+    def undo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        """Undo *steps* transactions in *doc_name*."""
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            for _ in range(max(1, int(steps))):
+                doc.undo()
+            doc.recompute()
+            return {"success": True, "undone_steps": max(1, int(steps))}
+        return self._tracked_call(None, task, self._timeout_for("create_document"))
+
+    def redo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        """Redo *steps* transactions in *doc_name*."""
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            for _ in range(max(1, int(steps))):
+                doc.redo()
+            doc.recompute()
+            return {"success": True, "redone_steps": max(1, int(steps))}
+        return self._tracked_call(None, task, self._timeout_for("create_document"))
+
+    def save_document(self, doc_name: str, path: str | None = None) -> dict[str, Any]:
+        """Save *doc_name* to *path* (or to its current file path if None)."""
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            try:
+                if path:
+                    doc.saveAs(path)
+                    return {"success": True, "path": path}
+                doc.save()
+                return {"success": True, "path": doc.FileName or "<unsaved>"}
+            except Exception as e:
+                return {"success": False, "error": f"{type(e).__name__}: {e}"}
+        return self._tracked_call(None, task, self._timeout_for("create_document"))
+
+    def export_object(self, doc_name: str, obj_name: str, path: str, fmt: str | None = None) -> dict[str, Any]:
+        """Export *obj_name* from *doc_name* to *path*.
+
+        ``fmt`` may be "stl", "step", "iges", "obj" etc. — FreeCAD
+        infers from the extension if not given. The result is
+        ``{"success": True, "path": path, "format": fmt_or_inferred}``.
+        """
+        def task():
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return {"success": False, "error": f"Document '{doc_name}' not found."}
+            obj = doc.getObject(obj_name)
+            if not obj:
+                return {"success": False, "error": f"Object '{obj_name}' not found."}
+            try:
+                import os as _os
+                if fmt is None:
+                    ext = _os.path.splitext(path)[1].lstrip(".").lower()
+                    fmt = ext or "stl"
+                # FreeCAD's Mesh API takes care of STL; other formats need
+                # the Part API. We branch on the extension.
+                if fmt in ("stl",):
+                    import MeshPart
+                    mesh = MeshPart.meshFromShape(obj.Shape)
+                    mesh.write(path)
+                else:
+                    # step/iges/brep/etc. go through the document exporter.
+                    doc.exportPart = getattr(doc, "exportPart", None)
+                    # FreeCAD exposes document-level exporters that can
+                    # take a single object via a property set.
+                    from FreeCAD import export as fc_export  # type: ignore
+                    fc_export([obj], path)
+                return {"success": True, "path": path, "format": fmt}
+            except Exception as e:
+                return {"success": False, "error": f"{type(e).__name__}: {e}"}
+        return self._tracked_call(None, task, self._timeout_for("create_object"))
+
+    def get_active_view(self) -> dict[str, Any]:
+        """Return metadata about the currently active view."""
+        def task():
+            try:
+                view = FreeCADGui.ActiveDocument.ActiveView
+            except Exception as e:
+                return {"success": False, "error": f"{type(e).__name__}: {e}"}
+            if view is None:
+                return {"success": False, "error": "no active view"}
+            try:
+                width, height = _get_view_size(view)
+            except Exception:
+                width = height = None
+            return {
+                "success": True,
+                "view_type": type(view).__name__,
+                "width": width,
+                "height": height,
+                "has_save_image": hasattr(view, "saveImage"),
+            }
+        return self._tracked_call(None, task, self._timeout_for("get_active_screenshot"))
+
+    def cancel_request(self, request_id: str) -> dict[str, Any]:
+        """Cancel a previously-submitted request by id (cooperative).
+
+        Marks ``request_id`` so that when the GUI worker pops the queued
+        task it short-circuits and reports ``cancelled``. Safe to call
+        multiple times with the same id; safe to call with an unknown id
+        (returns ``cancelled=False``). The id is removed from the
+        cancelled set once consumed.
+        """
+        if not request_id or not isinstance(request_id, str):
+            return {"success": False, "error": "request_id must be a non-empty string"}
+        tracker = _get_tracker()
+        cancelled = tracker.cancel(request_id)
+        return {"success": True, "request_id": request_id, "cancelled": cancelled}
+
+    def _tracked_call(
+        self,
+        request_id: str | None,
+        task_factory: Callable[[], Any],
+        timeout: float,
+    ) -> Any:
+        """Submit *task_factory* to the GUI queue with idempotency + cancel.
+
+        Behaviour:
+        * If ``request_id`` already completed, return the cached response.
+        * If ``request_id`` is cancelled before dispatch, return a
+          cancellation response without invoking the task.
+        * Otherwise schedule the task; the dispatched task checks the
+          cancel flag right before running and short-circuits if set.
+        * On completion, cache the response under ``request_id`` (FIFO
+          eviction; see ``_request_tracking.RequestTracker``).
+        """
+        tracker = _get_tracker()
+
+        # Fast paths before we even touch the queue.
+        if request_id is not None:
+            cached = tracker.get_cached(request_id)
+            if cached is not None:
+                return cached
+            if tracker.consume_cancel(request_id):
+                return {"success": False, "error": "request cancelled before execution", "request_id": request_id, "cancelled": True}
+
+        # Build the GUI-thread task. We close over the tracker and id so
+        # cancellation checks happen at the latest possible moment.
+        def task():
+            if request_id is not None and tracker.consume_cancel(request_id):
+                return {"success": False, "error": "request cancelled before execution", "request_id": request_id, "cancelled": True}
+            try:
+                result = task_factory()
+            except Exception as e:
+                result = {"success": False, "error": f"{type(e).__name__}: {e}"}
+            if request_id is not None:
+                tracker.cache_response(request_id, result)
+            return result
+
+        rpc_request_queue.put(task)
+        try:
+            return rpc_response_queue.get(timeout=timeout)
+        except queue.Empty:
+            return {"success": False, "error": f"no response within {timeout}s (still queued or running on GUI thread)"}
+
+    def create_document(self, name="New_Document", request_id: str | None = None, timeout: float | None = None):
+        def task():
+            ok = self._create_document_gui(name)
+            return {"success": ok is True, "document_name": name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self._timeout_for("create_document", timeout))
+
+    def create_object(self, doc_name, obj_data: dict[str, Any], request_id: str | None = None, timeout: float | None = None):
         obj = Object(
             name=obj_data.get("Name", "New_Object"),
             type=obj_data["Type"],
             analysis=obj_data.get("Analysis", None),
             properties=obj_data.get("Properties", {}),
         )
-        rpc_request_queue.put(lambda: self._create_object_gui(doc_name, obj))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "object_name": obj.name}
-        else:
-            return {"success": False, "error": res}
 
-    def edit_object(self, doc_name: str, obj_name: str, properties: dict[str, Any]) -> dict[str, Any]:
+        def task():
+            ok = self._create_object_gui(doc_name, obj)
+            return {"success": ok is True, "object_name": obj.name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self._timeout_for("create_object", timeout))
+
+    def edit_object(self, doc_name: str, obj_name: str, properties: dict[str, Any], request_id: str | None = None, timeout: float | None = None) -> dict[str, Any]:
         obj = Object(
             name=obj_name,
             properties=properties.get("Properties", {}),
         )
-        rpc_request_queue.put(lambda: self._edit_object_gui(doc_name, obj))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "object_name": obj.name}
-        else:
-            return {"success": False, "error": res}
 
-    def delete_object(self, doc_name: str, obj_name: str):
-        rpc_request_queue.put(lambda: self._delete_object_gui(doc_name, obj_name))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "object_name": obj_name}
-        else:
-            return {"success": False, "error": res}
+        def task():
+            ok = self._edit_object_gui(doc_name, obj)
+            return {"success": ok is True, "object_name": obj.name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self._timeout_for("edit_object", timeout))
 
-    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600) -> dict[str, Any]:
-        """Run the CalculiX solver on an existing Fem::FemAnalysis and return summary results."""
+    def delete_object(self, doc_name: str, obj_name: str, request_id: str | None = None, timeout: float | None = None):
+        def task():
+            ok = self._delete_object_gui(doc_name, obj_name)
+            return {"success": ok is True, "object_name": obj_name if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self._timeout_for("delete_object", timeout))
+
+    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600, request_id: str | None = None) -> dict[str, Any]:
+        """Run the CalculiX solver on an existing Fem::FemAnalysis and return summary results.
+
+        ``timeout`` here is the solver deadline in seconds (the previous
+        public API). Use ``per_op_timeout`` to override the *RPC queue*
+        wait timeout (the time we wait for the GUI worker to dequeue and
+        run the solver). The two are independent: the queue wait is
+        typically the bottleneck.
+        """
         try:
             timeout_s = int(timeout)
         except (TypeError, ValueError):
             return {"success": False, "error": f"invalid timeout: {timeout!r}"}
-        rpc_request_queue.put(lambda: self._run_fem_analysis_gui(doc_name, analysis_name))
-        try:
-            res = rpc_response_queue.get(timeout=timeout_s)
-        except queue.Empty:
-            return {"success": False, "error": f"solver did not return within {timeout_s}s (still running on the GUI thread)"}
-        if isinstance(res, dict):
-            return res
-        return {"success": False, "error": str(res)}
 
-    def execute_code(self, code: str) -> dict[str, Any]:
-        output_buffer = io.StringIO()
         def task():
+            return self._run_fem_analysis_gui(doc_name, analysis_name)
+        return self._tracked_call(request_id, task, self._timeout_for("run_fem_analysis", timeout_s))
+
+    def execute_code(self, code: str, request_id: str | None = None, timeout: float | None = None) -> dict[str, Any]:
+        # The output buffer MUST live inside the closure — otherwise two
+        # concurrent execute_code requests share the same StringIO and the
+        # caller receives a mix of both runs' stdout.
+        def task():
+            buf = io.StringIO()
             try:
-                with contextlib.redirect_stdout(output_buffer):
+                with contextlib.redirect_stdout(buf):
                     exec(code, globals())
                 FreeCAD.Console.PrintMessage("Python code executed successfully.\n")
-                return True
+                return {
+                    "success": True,
+                    "message": "Python code execution scheduled. \nOutput: " + buf.getvalue(),
+                }
             except Exception as e:
                 FreeCAD.Console.PrintError(
                     f"Error executing Python code: {e}\n"
                 )
-                return f"Error executing Python code: {e}\n"
-
-        rpc_request_queue.put(task)
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {
-                "success": True,
-                "message": "Python code execution scheduled. \nOutput: " + output_buffer.getvalue()
-            }
-        else:
-            return {"success": False, "error": res}
+                return {
+                    "success": False,
+                    "error": f"Error executing Python code: {e}\n",
+                    "output": buf.getvalue(),
+                }
+        return self._tracked_call(request_id, task, self._timeout_for("execute_code", timeout))
 
     def get_objects(self, doc_name):
         doc = FreeCAD.getDocument(doc_name)
@@ -405,13 +811,11 @@ class FreeCADRPC:
         else:
             return None
 
-    def insert_part_from_library(self, relative_path):
-        rpc_request_queue.put(lambda: self._insert_part_from_library(relative_path))
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            return {"success": True, "message": "Part inserted from library."}
-        else:
-            return {"success": False, "error": res}
+    def insert_part_from_library(self, relative_path, request_id: str | None = None, timeout: float | None = None):
+        def task():
+            ok = self._insert_part_from_library(relative_path)
+            return {"success": ok is True, "message": "Part inserted from library." if ok is True else None, "error": None if ok is True else ok}
+        return self._tracked_call(request_id, task, self._timeout_for("insert_part_from_library", timeout))
 
     def list_documents(self):
         return list(FreeCAD.listDocuments().keys())
@@ -419,56 +823,62 @@ class FreeCADRPC:
     def get_parts_list(self):
         return get_parts_list()
 
-    def get_active_screenshot(self, view_name: str = "Isometric", width: int | None = None, height: int | None = None, focus_object: str | None = None) -> str:
+    def get_active_screenshot(self, view_name: str = "Isometric", width: int | None = None, height: int | None = None, focus_object: str | None = None, timeout: float | None = None) -> str:
         """Get a screenshot of the active view.
-        
+
         Returns a base64-encoded string of the screenshot or None if a screenshot
         cannot be captured (e.g., when in TechDraw or Spreadsheet view).
+
+        The view-support check and the capture run inside a single GUI-thread
+        task, so the view cannot be switched out from under us between the two
+        steps (which used to race when the user toggled workbenches).
         """
-        # First check if the active view supports screenshots
-        def check_view_supports_screenshots():
+        # Build the tmp path OUTSIDE the task so the queue.put can be a single
+        # closure with no side effects leaking to the GUI thread.
+        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+
+        def task():
             try:
                 active_view = FreeCADGui.ActiveDocument.ActiveView
                 if active_view is None:
                     FreeCAD.Console.PrintWarning("No active view available\n")
-                    return False
-                
-                view_type = type(active_view).__name__
-                has_save_image = hasattr(active_view, 'saveImage')
-                FreeCAD.Console.PrintMessage(f"View type: {view_type}, Has saveImage: {has_save_image}\n")
-                return has_save_image
+                    return {"success": False, "reason": "no_active_view"}
+
+                if not hasattr(active_view, 'saveImage'):
+                    FreeCAD.Console.PrintWarning("Current view does not support screenshots\n")
+                    return {"success": False, "reason": "view_unsupported"}
+
+                ok = self._save_active_screenshot(tmp_path, view_name, width, height, focus_object)
+                if ok is not True:
+                    return {"success": False, "reason": "capture_failed", "detail": ok}
+                return {"success": True}
             except Exception as e:
-                FreeCAD.Console.PrintError(f"Error checking view capabilities: {e}\n")
-                return False
-                
-        rpc_request_queue.put(check_view_supports_screenshots)
-        supports_screenshots = rpc_response_queue.get(timeout=self.TIMEOUT)
-        
-        if not supports_screenshots:
-            FreeCAD.Console.PrintWarning("Current view does not support screenshots\n")
-            return None
-            
-        # If view supports screenshots, proceed with capture
-        fd, tmp_path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        rpc_request_queue.put(
-            lambda: self._save_active_screenshot(tmp_path, view_name, width, height, focus_object)
-        )
-        res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
-            try:
-                with open(tmp_path, "rb") as image_file:
-                    image_bytes = image_file.read()
-                    encoded = base64.b64encode(image_bytes).decode("utf-8")
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            return encoded
-        else:
+                FreeCAD.Console.PrintError(f"Screenshot task raised {type(e).__name__}: {e}\n")
+                return {"success": False, "reason": "exception", "detail": f"{type(e).__name__}: {e}"}
+
+        rpc_request_queue.put(task)
+        try:
+            res = rpc_response_queue.get(timeout=self._timeout_for("get_active_screenshot", timeout))
+        except queue.Empty:
+            FreeCAD.Console.PrintWarning("Screenshot capture timed out\n")
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-            FreeCAD.Console.PrintWarning(f"Failed to capture screenshot: {res}\n")
             return None
+
+        if not isinstance(res, dict) or not res.get("success"):
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return None
+
+        try:
+            with open(tmp_path, "rb") as image_file:
+                image_bytes = image_file.read()
+            encoded = base64.b64encode(image_bytes).decode("utf-8")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        return encoded
 
     def _create_document_gui(self, name):
         doc = FreeCAD.newDocument(name)
@@ -525,7 +935,12 @@ class FreeCADRPC:
 
                     if callable(make_method):
                         res = make_method(doc, obj.name)
-                        set_object_property(doc, res, obj.properties)
+                        prop_errors = set_object_property(doc, res, obj.properties)
+                        if prop_errors:
+                            FreeCAD.Console.PrintWarning(
+                                f"FEM object '{res.Name}' created with {len(prop_errors)} property warning(s): "
+                                f"{prop_errors}\n"
+                            )
                         FreeCAD.Console.PrintMessage(
                             f"FEM object '{res.Name}' created with '{method_name}'.\n"
                         )
@@ -535,7 +950,12 @@ class FreeCADRPC:
                         getattr(doc, obj.analysis).addObject(res)
                 else:
                     res = doc.addObject(obj.type, obj.name)
-                    set_object_property(doc, res, obj.properties)
+                    prop_errors = set_object_property(doc, res, obj.properties)
+                    if prop_errors:
+                        FreeCAD.Console.PrintWarning(
+                            f"Object '{res.Name}' created with {len(prop_errors)} property warning(s): "
+                            f"{prop_errors}\n"
+                        )
                     FreeCAD.Console.PrintMessage(
                         f"{res.TypeId} '{res.Name}' added to '{doc_name}' via RPC.\n"
                     )
@@ -575,7 +995,12 @@ class FreeCADRPC:
                 )
                 # delete References from properties
                 del obj.properties["References"]
-            set_object_property(doc, obj_ins, obj.properties)
+            prop_errors = set_object_property(doc, obj_ins, obj.properties)
+            if prop_errors:
+                FreeCAD.Console.PrintWarning(
+                    f"Object '{obj.name}' edited with {len(prop_errors)} property warning(s): "
+                    f"{prop_errors}\n"
+                )
             doc.recompute()
             FreeCAD.Console.PrintMessage(f"Object '{obj.name}' updated via RPC.\n")
             return True
@@ -659,6 +1084,17 @@ class FreeCADRPC:
                 "traceback": traceback.format_exc(),
                 "working_dir": work_dir,
             }
+        finally:
+            # Clean up the solver scratch directory unless the operator asked
+            # to keep it (via env var) for post-mortem inspection. CCX writes
+            # hundreds of MB per run; without this every solve leaks disk.
+            if work_dir is not None and not _keep_fem_workdir():
+                _safe_rmtree(
+                    work_dir,
+                    on_warning=lambda msg: FreeCAD.Console.PrintWarning(
+                        f"MCP RPC: {msg}\n"
+                    ),
+                )
 
     def _delete_object_gui(self, doc_name: str, obj_name: str):
         doc = FreeCAD.getDocument(doc_name)
@@ -717,88 +1153,114 @@ class FreeCADRPC:
                 raise ValueError(f"Invalid view name: {view_name}")
 
             focused_selection = False
-
-            # Focus on specific object or fit all
-            if focus_object:
-                doc = FreeCAD.ActiveDocument
-                obj = doc.getObject(focus_object) if doc else None
-                if obj:
-                    FreeCADGui.Selection.clearSelection()
-                    FreeCADGui.Selection.addSelection(obj)
-                    FreeCADGui.SendMsgToActiveView("ViewSelection")
-                    focused_selection = True
-                    _flush_gui_events()
-                    FreeCADGui.Selection.clearSelection()
+            try:
+                # Focus on specific object or fit all
+                if focus_object:
+                    doc = FreeCAD.ActiveDocument
+                    obj = doc.getObject(focus_object) if doc else None
+                    if obj:
+                        FreeCADGui.Selection.clearSelection()
+                        FreeCADGui.Selection.addSelection(obj)
+                        FreeCADGui.SendMsgToActiveView("ViewSelection")
+                        focused_selection = True
+                        _flush_gui_events()
+                    else:
+                        view.fitAll()
                 else:
                     view.fitAll()
-            else:
-                view.fitAll()
 
-            _flush_gui_events()
-            width, height = _resolve_screenshot_size(view, width, height)
-            view.saveImage(save_path, width, height, "Current")
-
-            if focused_selection:
-                FreeCADGui.Selection.clearSelection()
-                _flush_gui_events(delay_ms=0)
-            return True
+                _flush_gui_events()
+                width, height = _resolve_screenshot_size(view, width, height)
+                view.saveImage(save_path, width, height, "Current")
+                return True
+            finally:
+                # Always clear the selection — the previous code only did it
+                # after a successful saveImage, so an exception (e.g. a
+                # KeyboardInterrupt during _flush_gui_events) left the object
+                # highlighted, polluting the next user interaction.
+                if focused_selection:
+                    try:
+                        FreeCADGui.Selection.clearSelection()
+                        _flush_gui_events(delay_ms=0)
+                    except Exception as e:
+                        FreeCAD.Console.PrintWarning(
+                            f"MCP RPC: failed to clear selection after screenshot: {e}\n"
+                        )
         except Exception as e:
             return str(e)
 
 
+# Lock serialising start/stop. Without it, two callers (e.g. the auto-start
+# QTimer firing concurrently with a manual menu click) can both observe
+# ``rpc_server_instance is None``, build two servers, and leak one of them.
+_rpc_lock = threading.RLock()
+
+
 def start_rpc_server(port=9875):
-    global rpc_server_thread, rpc_server_instance
+    with _rpc_lock:
+        global rpc_server_thread, rpc_server_instance
 
-    if rpc_server_instance:
-        return "RPC Server already running."
+        if rpc_server_instance:
+            return "RPC Server already running."
 
-    settings = load_settings()
-    remote_enabled = settings.get("remote_enabled", False)
-    allowed_ips = settings.get("allowed_ips", "127.0.0.1")
+        settings = load_settings()
+        remote_enabled = settings.get("remote_enabled", False)
+        allowed_ips = settings.get("allowed_ips", "127.0.0.1")
 
-    if remote_enabled:
-        host = "0.0.0.0"
-    else:
-        host = "localhost"
-
-    rpc_server_instance = FilteredXMLRPCServer(
-        (host, port), allowed_ips_str=allowed_ips, allow_none=True, logRequests=False
-    )
-    rpc_server_instance.register_instance(FreeCADRPC())
-
-    def server_loop():
-        FreeCAD.Console.PrintMessage(f"RPC Server started at {host}:{port}\n")
         if remote_enabled:
-            FreeCAD.Console.PrintMessage(f"Remote connections enabled. Allowed IPs: {allowed_ips}\n")
-        rpc_server_instance.serve_forever()
+            host = "0.0.0.0"
+        else:
+            host = "localhost"
 
-    rpc_server_thread = threading.Thread(target=server_loop, daemon=True)
-    rpc_server_thread.start()
+        rpc_server_instance = FilteredXMLRPCServer(
+            (host, port), allowed_ips_str=allowed_ips, allow_none=True, logRequests=False
+        )
+        rpc_server_instance.register_instance(FreeCADRPC())
 
-    QtCore.QTimer.singleShot(500, process_gui_tasks)
+        def server_loop():
+            FreeCAD.Console.PrintMessage(f"RPC Server started at {host}:{port}\n")
+            if remote_enabled:
+                FreeCAD.Console.PrintMessage(f"Remote connections enabled. Allowed IPs: {allowed_ips}\n")
+            rpc_server_instance.serve_forever()
 
-    msg = f"RPC Server started at {host}:{port}."
-    if remote_enabled:
-        msg += f" Allowed IPs: {allowed_ips}"
-    return msg
+        rpc_server_thread = threading.Thread(target=server_loop, daemon=True)
+        rpc_server_thread.start()
+
+        QtCore.QTimer.singleShot(500, process_gui_tasks)
+
+        msg = f"RPC Server started at {host}:{port}."
+        if remote_enabled:
+            msg += f" Allowed IPs: {allowed_ips}"
+        return msg
 
 
 def stop_rpc_server():
-    global rpc_server_instance, rpc_server_thread
+    with _rpc_lock:
+        global rpc_server_instance, rpc_server_thread
 
-    if rpc_server_instance:
-        # Post the sentinel so the next process_gui_tasks tick exits without
-        # rescheduling; otherwise a subsequent start_rpc_server would leave
-        # two QTimer chains running.
-        rpc_request_queue.put(_DISPATCH_SHUTDOWN)
-        rpc_server_instance.shutdown()
-        rpc_server_thread.join()
-        rpc_server_instance = None
-        rpc_server_thread = None
-        FreeCAD.Console.PrintMessage("RPC Server stopped.\n")
-        return "RPC Server stopped."
+        if rpc_server_instance:
+            # Post the sentinel so the next process_gui_tasks tick exits
+            # without rescheduling; otherwise a subsequent start_rpc_server
+            # would leave two QTimer chains running.
+            try:
+                rpc_request_queue.put(_DISPATCH_SHUTDOWN)
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"MCP RPC: failed to post shutdown sentinel: {e}\n")
+            rpc_server_instance.shutdown()
+            rpc_server_thread.join()
+            # server_close() releases the listening socket immediately so a
+            # subsequent start_rpc_server on the same port does not hit
+            # TIME_WAIT. shutdown() only stops serve_forever().
+            try:
+                rpc_server_instance.server_close()
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"MCP RPC: server_close raised {type(e).__name__}: {e}\n")
+            rpc_server_instance = None
+            rpc_server_thread = None
+            FreeCAD.Console.PrintMessage("RPC Server stopped.\n")
+            return "RPC Server stopped."
 
-    return "RPC Server was not running."
+        return "RPC Server was not running."
 
 
 class StartRPCServerCommand:

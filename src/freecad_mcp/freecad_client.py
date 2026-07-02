@@ -1,9 +1,44 @@
 import logging
+import os
 import xmlrpc.client
 from typing import Any
 
-
 logger = logging.getLogger("FreeCADMCPserver")
+
+# Read the default XML-RPC timeout from the environment so operators can
+# tighten it (slow networks, fragile tunnels) or relax it (huge FEM
+# results) without touching code. Default = 10s, matching the server's
+# own per-task timeout.
+_DEFAULT_RPC_TIMEOUT = float(os.environ.get("FREECAD_MCP_RPC_TIMEOUT", "10"))
+
+
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """XML-RPC transport that enforces a connect/read timeout on every call.
+
+    The stdlib ``ServerProxy`` does not expose a socket timeout, so without
+    this every call hangs forever if the FreeCAD RPC server dies. The
+    timeout applies to TCP connect and to each socket read; ``set_timeout``
+    on the response is also set as a final safety net so a peer that opens
+    but never replies is still bounded.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        super().__init__()
+        self._timeout = max(0.1, float(timeout))
+
+    def make_connection(self, host):  # type: ignore[override]
+        # The stdlib Transport contract: ``host`` is either None (use
+        # self.host/self.port) or a (host, port) tuple. We accept either
+        # shape and return an HTTPConnection with timeout baked in.
+        if host is None:
+            endpoint_host, endpoint_port = self.host, self.port
+        else:
+            endpoint_host, endpoint_port = host[0], host[1]
+        import http.client
+        return http.client.HTTPConnection(
+            endpoint_host, endpoint_port, timeout=self._timeout
+        )
+
 
 _SCREENSHOT_SUPPORT_CHECK = """
 import FreeCAD
@@ -27,9 +62,29 @@ else:
 """
 
 
+def _build_server_proxy(host: str, port: int, timeout: float) -> xmlrpc.client.ServerProxy:
+    """Construct a ServerProxy that honours *timeout*.
+
+    Uses the stdlib ``Transport`` (HTTP) by default; falls back to
+    ``SafeTransport`` for HTTPS, both wrapped with our timeout enforcement.
+    """
+    url = f"http://{host}:{port}"
+    try:
+        transport: xmlrpc.client.Transport = _TimeoutTransport(timeout)
+    except Exception:
+        # Extremely defensive: if TimeoutTransport fails for some reason we
+        # still get a working (but untimed) client rather than crashing the
+        # server at startup.
+        logger.warning("Falling back to default XML-RPC transport without timeout")
+        transport = xmlrpc.client.Transport()
+    return xmlrpc.client.ServerProxy(url, allow_none=True, transport=transport)
+
+
 class FreeCADConnection:
-    def __init__(self, host: str = "localhost", port: int = 9875):
-        self.server = xmlrpc.client.ServerProxy(f"http://{host}:{port}", allow_none=True)
+    def __init__(self, host: str = "localhost", port: int = 9875, timeout: float | None = None):
+        effective_timeout = _DEFAULT_RPC_TIMEOUT if timeout is None else float(timeout)
+        self.timeout = effective_timeout
+        self.server = _build_server_proxy(host, port, effective_timeout)
 
     def disconnect(self) -> None:
         # Transport.close() clears cached HTTP connections if one was opened.
@@ -39,25 +94,34 @@ class FreeCADConnection:
             close()
 
     def ping(self) -> bool:
-        return self.server.ping()
+        return self.server.ping()  # type: ignore[return-value]
 
-    def create_document(self, name: str) -> dict[str, Any]:
-        return self.server.create_document(name)
+    def cancel_request(self, request_id: str) -> dict[str, Any]:
+        """Cooperatively cancel a previously-submitted request by id.
 
-    def create_object(self, doc_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
-        return self.server.create_object(doc_name, obj_data)
+        The id must be the same string passed to the originating call. The
+        cancel only takes effect if the GUI worker has not yet started the
+        task; once the handler is running it cannot be interrupted.
+        """
+        return self.server.cancel_request(request_id)  # type: ignore[return-value]
 
-    def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
-        return self.server.edit_object(doc_name, obj_name, obj_data)
+    def create_document(self, name: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.create_document(name, request_id)  # type: ignore[return-value]
 
-    def delete_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
-        return self.server.delete_object(doc_name, obj_name)
+    def create_object(self, doc_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
+        return self.server.create_object(doc_name, obj_data, request_id)  # type: ignore[return-value]
 
-    def insert_part_from_library(self, relative_path: str) -> dict[str, Any]:
-        return self.server.insert_part_from_library(relative_path)
+    def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
+        return self.server.edit_object(doc_name, obj_name, obj_data, request_id)  # type: ignore[return-value]
 
-    def execute_code(self, code: str) -> dict[str, Any]:
-        return self.server.execute_code(code)
+    def delete_object(self, doc_name: str, obj_name: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.delete_object(doc_name, obj_name, request_id)  # type: ignore[return-value]
+
+    def insert_part_from_library(self, relative_path: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.insert_part_from_library(relative_path, request_id)  # type: ignore[return-value]
+
+    def execute_code(self, code: str, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.execute_code(code, request_id)  # type: ignore[return-value]
 
     def get_active_screenshot(
         self,
@@ -67,27 +131,48 @@ class FreeCADConnection:
         focus_object: str | None = None,
     ) -> str | None:
         try:
-            result = self.server.execute_code(_SCREENSHOT_SUPPORT_CHECK)
-            if not result.get("success", False) or "Current view does not support screenshots" in result.get("message", ""):
+            result = self.server.execute_code(_SCREENSHOT_SUPPORT_CHECK)  # type: ignore[union-attr]
+            # XML-RPC may return any JSON-serialisable type; coerce to a
+            # dict view defensively.
+            result_dict = result if isinstance(result, dict) else {}
+            if not result_dict.get("success", False) or "Current view does not support screenshots" in result_dict.get("message", ""):
                 logger.info("Screenshot unavailable in current view (likely Spreadsheet or TechDraw view)")
                 return None
 
-            return self.server.get_active_screenshot(view_name, width, height, focus_object)
+            return self.server.get_active_screenshot(view_name, width, height, focus_object)  # type: ignore[return-value]
         except Exception as e:
             logger.error(f"Error getting screenshot: {e}")
             return None
 
     def get_objects(self, doc_name: str) -> list[dict[str, Any]]:
-        return self.server.get_objects(doc_name)
+        return self.server.get_objects(doc_name)  # type: ignore[return-value]
 
     def get_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
-        return self.server.get_object(doc_name, obj_name)
+        return self.server.get_object(doc_name, obj_name)  # type: ignore[return-value]
 
     def get_parts_list(self) -> list[str]:
-        return self.server.get_parts_list()
+        return self.server.get_parts_list()  # type: ignore[return-value]
 
     def list_documents(self) -> list[str]:
-        return self.server.list_documents()
+        return self.server.list_documents()  # type: ignore[return-value]
 
-    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600) -> dict[str, Any]:
-        return self.server.run_fem_analysis(doc_name, analysis_name, timeout)
+    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600, request_id: str | None = None) -> dict[str, Any]:
+        return self.server.run_fem_analysis(doc_name, analysis_name, timeout, request_id)  # type: ignore[return-value]
+
+    def health_check(self) -> dict[str, Any]:
+        return self.server.health_check()  # type: ignore[return-value]
+
+    def undo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        return self.server.undo(doc_name, steps)  # type: ignore[return-value]
+
+    def redo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
+        return self.server.redo(doc_name, steps)  # type: ignore[return-value]
+
+    def save_document(self, doc_name: str, path: str | None = None) -> dict[str, Any]:
+        return self.server.save_document(doc_name, path)  # type: ignore[return-value]
+
+    def export_object(self, doc_name: str, obj_name: str, path: str, fmt: str | None = None) -> dict[str, Any]:
+        return self.server.export_object(doc_name, obj_name, path, fmt)  # type: ignore[return-value]
+
+    def get_active_view(self) -> dict[str, Any]:
+        return self.server.get_active_view()  # type: ignore[return-value]

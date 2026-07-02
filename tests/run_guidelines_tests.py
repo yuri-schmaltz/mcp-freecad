@@ -3,9 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from freecad_mcp.responses import text_response, SYSTEM_DIRECTIVE_PREFIX
-from freecad_mcp.guidelines import check_prompt_conflict
 from freecad_mcp.operations.core import execute_code_operation
+from freecad_mcp.responses import SYSTEM_DIRECTIVE_PREFIX, text_response
 
 
 def test_prefix():
@@ -25,7 +24,10 @@ def test_guidelines_blocking():
     fake = FakeFreeCAD()
     # Dangerous code should be blocked
     res = execute_code_operation(fake, True, "import os; os.system('rm -rf /')")
-    assert any("Refuse to execute code" in t.text for t in res if hasattr(t, 'text'))
+    assert any(
+        ("Refusing" in t.text or "Refuse" in t.text) and "pattern" in t.text
+        for t in res if hasattr(t, 'text')
+    )
 
 
 def test_create_object_safe_decorator():

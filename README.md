@@ -186,7 +186,13 @@ The `--host` value is validated on startup — it must be a valid IPv4/IPv6 addr
 * `get_objects`: Get all objects in a document.
 * `get_object`: Get an object in a document.
 * `get_parts_list`: Get the list of parts in the [parts library](https://github.com/FreeCAD/FreeCAD-library).
+* `list_documents`: List the names of all open documents.
 * `run_fem_analysis`: Run the CalculiX solver on an existing `Fem::FemAnalysis` and return summary results (max von Mises stress, max displacement, node count, working directory). Auto-creates a `SolverCcxTools` if the analysis has none. See [`examples/cantilever_fem.py`](examples/cantilever_fem.py) for an end-to-end usage example.
+* `undo` / `redo`: Roll back or replay document transactions.
+* `save_document`: Save a document to disk (optional explicit path).
+* `export_object`: Export a single object to STL / STEP / IGES / etc.
+* `get_active_view`: Inspect the active view (type, size, saveImage support).
+* `health_check`: Liveness probe for monitoring (uptime, queue sizes, settings path).
 
 ## Contributors
 
@@ -200,21 +206,40 @@ Made with [contrib.rocks](https://contrib.rocks).
 
 This project now integrates directives from `docs/gabarito_ia.pdf` (extracted to `docs/gabarito_ia_extracted.txt`) and enforces them at runtime:
 
-- The application will prefix textual responses with the mandated sentence from the gabarito.
-- Dangerous or "agreement trap" prompts (e.g. requests to bypass safety, or code that calls `os.system`) are detected and refused with constructive guidance.
+- The application will prefix textual responses with the mandated sentence from the gabarito. Set `FREECAD_MCP_NO_DIRECTIVE_PREFIX=1` to suppress it (saves ~10 tokens/call).
+- Dangerous or "agreement trap" prompts (e.g. requests to bypass safety, or code that calls `os.system`) are detected and refused with constructive guidance. The blocklist is extensible via `FREECAD_MCP_BLOCKED_PATTERNS` (regexes). See [SECURITY.md](SECURITY.md) for the full threat model.
 - Logging is configurable via the `FREECAD_MCP_LOGLEVEL` environment variable (default `INFO`).
 - Logs are written to console and to `logs/freecad_mcp.log` (rotating file handler).
 
-## Running tests
+### Other environment variables
 
-There is a small test runner which validates the guidelines enforcement and basic operation handlers. Run locally with:
+| Var | Default | Effect |
+|---|---|---|
+| `FREECAD_MCP_RPC_TIMEOUT` | `10` | XML-RPC client timeout (seconds). |
+| `FREECAD_MCP_RPC_TIMEOUTS` | — | Per-op JSON timeouts, e.g. `{"create_object": 120, "run_fem_analysis": 900}`. |
+| `FREECAD_MCP_KEEP_FEM_WORKDIR` | `false` | If truthy, keep the CalculiX scratch directory after each run. |
+| `FREECAD_MCP_NO_DIRECTIVE_PREFIX` | `false` | Drop the audit prefix from every text response. |
+| `FREECAD_MCP_MAX_INSTRUCTIONS_CHARS` | `8192` | Cap on `mcp_instructions` size with a logged warning. |
+| `FREECAD_MCP_BLOCKED_PATTERNS` | — | Comma-separated regexes to extend the code blocklist. |
+
+## Running tests
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-python -m pip install -r requirements.txt
-python -u tests/run_guidelines_tests.py
+python -m pip install -e ".[dev]"
+pytest                      # ~175 tests, ~5s, no FreeCAD required
+pytest -m freecad           # integration tests (need a running FreeCAD)
 ```
 
-CI is configured in `.github/workflows/ci.yml` to run the same tests on push and pull requests (Python 3.12).
+CI is configured in `.github/workflows/ci.yml` to run `pytest` (with
+coverage), `ruff`, and `mypy` on every push and pull request, across
+Python 3.11 / 3.12 / 3.13.
+
+## Contributing & Security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, branch
+naming, and PR process. See [SECURITY.md](SECURITY.md) for the threat
+model and the vulnerability reporting process. The current audit and
+remediation plan live in [docs/IMPROVEMENT_PLAN.md](docs/IMPROVEMENT_PLAN.md).
 

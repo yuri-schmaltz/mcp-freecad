@@ -1,0 +1,25 @@
+# Ruff configuration: keep the bar at "E + F + W" (pycodestyle + pyflakes +
+# pycodestyle warnings) plus a couple of opinionated rules. Bump up to a
+# stricter profile once the codebase stabilises.
+
+line-length = 110
+target-version = "py312"
+
+[lint]
+# Defaults: E (pycodestyle), F (pyflakes), W (pycodestyle warnings).
+# Add UP (pyupgrade) so we get free modernisation hints.
+select = ["E", "F", "W", "UP", "B", "SIM", "I"]
+ignore = [
+    "E501",  # line too long — we set line-length and accept occasional overruns
+    "B008",  # do not perform function calls in default argument (FastAPI Depends pattern)
+]
+
+[lint.per-file-ignores]
+# Tests use long fixture names and import shims that ruff flags.
+"tests/*" = ["E402", "B011", "B007", "SIM", "I001"]
+# The FreeCAD addon imports the heavy FreeCAD modules at top level.
+"addon/FreeCADMCP/rpc_server/rpc_server.py" = ["E402", "B007"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

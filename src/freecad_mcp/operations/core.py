@@ -6,30 +6,24 @@ try:
 except Exception:
     from dataclasses import dataclass
 
-    @dataclass
+    @dataclass  # type: ignore[no-redef]
     class ImageContent:
         type: str
         data: str
         mimeType: str
 
 from ..freecad_client import FreeCADConnection
+from ..guidelines import check_code_conflict, check_path_conflict
 from ..responses import ToolResponse, add_screenshot_if_available, json_response, text_response
-from ..guidelines import check_prompt_conflict
 from ..utils import safe_operation
-
 
 logger = logging.getLogger("FreeCADMCPserver")
 
 
+@safe_operation
 def create_document_operation(freecad: FreeCADConnection, name: str) -> ToolResponse:
-    # Check for guideline conflicts (e.g., dangerous or unquestioning prompts)
-    conflict, msg = check_prompt_conflict(name)
-    if conflict:
-        logger.warning("create_document blocked by guidelines: %s", msg)
-        return text_response(
-            f"Diretriz: {msg} Forneça uma solicitação revisada ou mais contexto; proponho uma alternativa mais segura."
-        )
-
+    # Document names are free-form labels — we do not scan them for code-style
+    # dangerous tokens (which would block legitimate names like "eval test").
     res = freecad.create_document(name)
     if res.get("success"):
         return text_response(f"Document '{res['document_name']}' created successfully")
@@ -46,14 +40,7 @@ def create_object_operation(
     analysis_name: str | None = None,
     obj_properties: dict[str, Any] | None = None,
 ) -> ToolResponse:
-    # Check prompt/object parameters for guideline conflicts
-    conflict, msg = check_prompt_conflict(obj_name or "")
-    if conflict:
-        logger.warning("create_object blocked by guidelines: %s", msg)
-        return text_response(
-            f"Diretriz: {msg} Forneça uma solicitação revisada ou mais contexto; proponho uma alternativa mais segura."
-        )
-
+    # Object names are also labels; no guidelines check here.
     obj_data = {
         "Name": obj_name,
         "Type": obj_type,
@@ -95,11 +82,6 @@ def delete_object_operation(
     doc_name: str,
     obj_name: str,
 ) -> ToolResponse:
-    conflict, msg = check_prompt_conflict(obj_name or "")
-    if conflict:
-        logger.warning("delete_object blocked by guidelines: %s", msg)
-        return text_response(f"Diretriz: {msg}")
-
     res = freecad.delete_object(doc_name, obj_name)
     screenshot = freecad.get_active_screenshot()
 
@@ -116,15 +98,12 @@ def execute_code_operation(
     only_text_feedback: bool,
     code: str,
 ) -> ToolResponse:
-    # Basic safety checks to enforce anti-sycophancy and prevent dangerous operations
-    conflict, msg = check_prompt_conflict(code)
+    # This is the only field where the code-style dangerous patterns apply,
+    # because the value is forwarded directly to FreeCAD's Python exec().
+    conflict, msg = check_code_conflict(code or "")
     if conflict:
         logger.warning("execute_code blocked by guidelines: %s", msg)
-        return text_response(
-            "Refuse to execute code containing potentially dangerous operations. "
-            "Please provide a safer, well-scoped snippet or describe the high-level change you want; "
-            "I will propose a secure implementation."
-        )
+        return text_response(msg)
 
     res = freecad.execute_code(code)
     screenshot = freecad.get_active_screenshot()
@@ -136,6 +115,7 @@ def execute_code_operation(
     return add_screenshot_if_available(response, screenshot, only_text_feedback)
 
 
+@safe_operation
 def get_view_operation(
     freecad: FreeCADConnection,
     view_name: str,
@@ -155,10 +135,15 @@ def insert_part_from_library_operation(
     only_text_feedback: bool,
     relative_path: str,
 ) -> ToolResponse:
-    conflict, msg = check_prompt_conflict(relative_path or "")
+    # Path-specific guard runs here; the authoritative realpath check happens
+    # in the addon (parts_library._safe_resolve), but failing early gives a
+    # better error message to the LLM.
+    conflict, msg = check_path_conflict(relative_path or "")
     if conflict:
         logger.warning("insert_part_from_library blocked by guidelines: %s", msg)
-        return text_response(f"Diretriz: {msg}")
+        return text_response(
+            f"Diretriz: {msg} Forneça um caminho relativo dentro da parts library."
+        )
 
     res = freecad.insert_part_from_library(relative_path)
     screenshot = freecad.get_active_screenshot()
@@ -176,11 +161,6 @@ def get_objects_operation(
     only_text_feedback: bool,
     doc_name: str,
 ) -> ToolResponse:
-    conflict, msg = check_prompt_conflict(doc_name or "")
-    if conflict:
-        logger.warning("get_objects blocked by guidelines: %s", msg)
-        return text_response(f"Diretriz: {msg}")
-
     screenshot = freecad.get_active_screenshot()
     response = json_response(freecad.get_objects(doc_name))
     return add_screenshot_if_available(response, screenshot, only_text_feedback)
@@ -193,11 +173,6 @@ def get_object_operation(
     doc_name: str,
     obj_name: str,
 ) -> ToolResponse:
-    conflict, msg = check_prompt_conflict((doc_name or "") + " " + (obj_name or ""))
-    if conflict:
-        logger.warning("get_object blocked by guidelines: %s", msg)
-        return text_response(f"Diretriz: {msg}")
-
     screenshot = freecad.get_active_screenshot()
     response = json_response(freecad.get_object(doc_name, obj_name))
     return add_screenshot_if_available(response, screenshot, only_text_feedback)
@@ -224,11 +199,6 @@ def run_fem_analysis_operation(
     analysis_name: str,
     timeout: int = 600,
 ) -> ToolResponse:
-    conflict, msg = check_prompt_conflict((doc_name or "") + " " + (analysis_name or ""))
-    if conflict:
-        logger.warning("run_fem_analysis blocked by guidelines: %s", msg)
-        return text_response(f"Diretriz: {msg}")
-
     res = freecad.run_fem_analysis(doc_name, analysis_name, timeout)
     if res.get("success"):
         def fmt(v, unit):
@@ -248,3 +218,56 @@ def run_fem_analysis_operation(
         "summary": f"FEM analysis '{analysis_name}' failed: {res.get('error')}",
         **res,
     })
+
+
+@safe_operation
+def undo_operation(freecad: FreeCADConnection, doc_name: str, steps: int = 1) -> ToolResponse:
+    res = freecad.undo(doc_name, steps)
+    if res.get("success"):
+        return text_response(
+            f"Undid {res.get('undone_steps', steps)} transaction(s) in '{doc_name}'."
+        )
+    return text_response(f"Failed to undo: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def redo_operation(freecad: FreeCADConnection, doc_name: str, steps: int = 1) -> ToolResponse:
+    res = freecad.redo(doc_name, steps)
+    if res.get("success"):
+        return text_response(
+            f"Redid {res.get('redone_steps', steps)} transaction(s) in '{doc_name}'."
+        )
+    return text_response(f"Failed to redo: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def save_document_operation(freecad: FreeCADConnection, doc_name: str, path: str | None = None) -> ToolResponse:
+    res = freecad.save_document(doc_name, path)
+    if res.get("success"):
+        return text_response(f"Saved '{doc_name}' to {res.get('path')}.")
+    return text_response(f"Failed to save: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def export_object_operation(
+    freecad: FreeCADConnection, doc_name: str, obj_name: str, path: str, fmt: str | None = None,
+) -> ToolResponse:
+    res = freecad.export_object(doc_name, obj_name, path, fmt)
+    if res.get("success"):
+        return text_response(
+            f"Exported '{obj_name}' to {res.get('path')} as {res.get('format')}."
+        )
+    return text_response(f"Failed to export: {res.get('error', 'unknown error')}")
+
+
+@safe_operation
+def get_active_view_operation(freecad: FreeCADConnection) -> ToolResponse:
+    res = freecad.get_active_view()
+    if not res.get("success"):
+        return text_response(f"Failed to get active view: {res.get('error', 'unknown error')}")
+    return json_response(res)
+
+
+@safe_operation
+def health_check_operation(freecad: FreeCADConnection) -> ToolResponse:
+    return json_response(freecad.health_check())

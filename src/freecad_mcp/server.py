@@ -1,8 +1,10 @@
 import logging
 import os
-from logging.handlers import RotatingFileHandler
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, Literal
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ImageContent, TextContent
@@ -14,16 +16,21 @@ from .operations import (
     delete_object_operation,
     edit_object_operation,
     execute_code_operation,
+    export_object_operation,
+    get_active_view_operation,
     get_object_operation,
     get_objects_operation,
     get_parts_list_operation,
     get_view_operation,
+    health_check_operation,
     insert_part_from_library_operation,
     list_documents_operation,
+    redo_operation,
     run_fem_analysis_operation,
+    save_document_operation,
+    undo_operation,
 )
 from .prompt_text import ASSET_CREATION_STRATEGY
-from pathlib import Path
 
 
 def _load_system_directives() -> str:
@@ -40,7 +47,15 @@ def _load_system_directives() -> str:
 
 
 def configure_logging() -> None:
-    """Configure root logging with console and rotating file handlers."""
+    """Configure root logging with console and rotating file handlers.
+
+    Idempotent: re-importing or reloading the module will not stack duplicate
+    handlers (which would otherwise inflate logs and confuse rotation).
+    """
+    root = logging.getLogger()
+    if getattr(root, "_freecad_mcp_configured", False):
+        return
+
     log_level_name = os.getenv("FREECAD_MCP_LOGLEVEL", "INFO").upper()
     level = getattr(logging, log_level_name, logging.INFO)
 
@@ -48,7 +63,6 @@ def configure_logging() -> None:
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s", "%Y-%m-%dT%H:%M:%SZ"
     )
 
-    root = logging.getLogger()
     root.setLevel(level)
 
     # Console handler
@@ -69,10 +83,11 @@ def configure_logging() -> None:
         # If file handler cannot be created, continue with console only
         pass
 
+    root._freecad_mcp_configured = True
+
 
 configure_logging()
-from .server_state import ServerState
-
+from .server_state import ServerState  # noqa: E402 — after configure_logging on purpose
 
 logger = logging.getLogger("FreeCADMCPserver")
 
@@ -80,7 +95,7 @@ state = ServerState()
 
 
 @asynccontextmanager
-async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
+async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     try:
         logger.info("FreeCADMCP server starting up")
         try:
@@ -103,6 +118,19 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 mcp_instructions = _load_system_directives()
 if ASSET_CREATION_STRATEGY:
     mcp_instructions = mcp_instructions + "\n\n" + ASSET_CREATION_STRATEGY
+
+# Cap the instructions to keep token cost predictable across long sessions.
+# Default 8KB — well under Claude's 200K context but large enough to fit
+# the gabarito (≈2.6KB) plus the asset strategy (≈1KB) plus headroom for
+# future additions. Override via env if you need more.
+_MAX_INSTRUCTIONS_CHARS = int(os.environ.get("FREECAD_MCP_MAX_INSTRUCTIONS_CHARS", "8192"))
+if len(mcp_instructions) > _MAX_INSTRUCTIONS_CHARS:
+    logger.warning(
+        f"mcp_instructions is {len(mcp_instructions)} chars; truncating to {_MAX_INSTRUCTIONS_CHARS}. "
+        "Set FREECAD_MCP_MAX_INSTRUCTIONS_CHARS to adjust."
+    )
+    mcp_instructions = mcp_instructions[:_MAX_INSTRUCTIONS_CHARS]
+logger.info(f"mcp_instructions size: {len(mcp_instructions)} chars (cap {_MAX_INSTRUCTIONS_CHARS})")
 
 mcp = FastMCP(
     "FreeCADMCP",
@@ -152,7 +180,7 @@ def create_object(
     obj_type: str,
     obj_name: str,
     analysis_name: str | None = None,
-    obj_properties: dict[str, Any] = None,
+    obj_properties: dict[str, Any] | None = None,
 ) -> list[TextContent | ImageContent]:
     """Create a new object in FreeCAD.
     Object type is starts with "Part::" or "Draft::" or "PartDesign::" or "Fem::".
@@ -477,6 +505,99 @@ def run_fem_analysis(
         analysis_name,
         timeout,
     )
+
+
+@mcp.tool()
+def undo(ctx: Context, doc_name: str, steps: int = 1) -> list[TextContent | ImageContent]:
+    """Undo one or more transactions in a FreeCAD document.
+
+    Args:
+        doc_name: Name of the FreeCAD document.
+        steps: How many transactions to undo (default 1).
+
+    Returns:
+        A message reporting the number of transactions undone.
+    """
+    return undo_operation(get_freecad_connection(), doc_name, steps)
+
+
+@mcp.tool()
+def redo(ctx: Context, doc_name: str, steps: int = 1) -> list[TextContent | ImageContent]:
+    """Redo one or more previously-undone transactions in a FreeCAD document.
+
+    Args:
+        doc_name: Name of the FreeCAD document.
+        steps: How many transactions to redo (default 1).
+
+    Returns:
+        A message reporting the number of transactions redone.
+    """
+    return redo_operation(get_freecad_connection(), doc_name, steps)
+
+
+@mcp.tool()
+def save_document(ctx: Context, doc_name: str, path: str | None = None) -> list[TextContent | ImageContent]:
+    """Save a FreeCAD document to disk.
+
+    Args:
+        doc_name: Name of the FreeCAD document.
+        path: Destination file path. If omitted, saves to the document's
+            current file path (FCStd).
+
+    Returns:
+        A message reporting success and the saved path.
+    """
+    return save_document_operation(get_freecad_connection(), doc_name, path)
+
+
+@mcp.tool()
+def export_object(
+    ctx: Context,
+    doc_name: str,
+    obj_name: str,
+    path: str,
+    fmt: str | None = None,
+) -> list[TextContent | ImageContent]:
+    """Export a single object from a FreeCAD document to a file.
+
+    Args:
+        doc_name: Name of the FreeCAD document.
+        obj_name: Name of the object inside the document.
+        path: Destination file path. The extension determines the
+            format if ``fmt`` is not given.
+        fmt: Optional explicit format (``stl``, ``step``, ``iges``,
+            ``obj``, ...). Overrides the extension inference.
+
+    Returns:
+        A message reporting success and the format written.
+    """
+    return export_object_operation(get_freecad_connection(), doc_name, obj_name, path, fmt)
+
+
+@mcp.tool()
+def get_active_view(ctx: Context) -> list[TextContent | ImageContent]:
+    """Return metadata about the currently active FreeCAD view.
+
+    Useful before calling `get_view` to check whether a screenshot is
+    possible, or to inspect the current rendering target.
+
+    Returns:
+        A JSON object with view_type, width, height, has_save_image.
+    """
+    return get_active_view_operation(get_freecad_connection())
+
+
+@mcp.tool()
+def health_check(ctx: Context) -> list[TextContent | ImageContent]:
+    """Lightweight liveness/readiness probe for monitoring.
+
+    Returns the server's uptime, queue sizes, cached-response count,
+    and the resolved settings directory. Safe to call repeatedly.
+
+    Returns:
+        A JSON object with diagnostic fields.
+    """
+    return health_check_operation(get_freecad_connection())
 
 
 @mcp.prompt()

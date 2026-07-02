@@ -10,6 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (none yet)
 
+## [0.3.0] — 2025-XX-XX
+
+### Added
+- **TLS support for the XML-RPC server**: set `FREECAD_MCP_TLS_CERT`
+  and `FREECAD_MCP_TLS_KEY` to PEM paths; the server will then wrap
+  every accepted socket in TLS (TLS 1.2 minimum). Falls back to plain
+  HTTP if either env var is missing or invalid (logged loudly).
+- **Bearer-token auth**: set `FREECAD_MCP_AUTH_TOKEN` to a shared
+  secret; every XML-RPC request must then carry a matching
+  `Authorization: Bearer <token>` header. Validation uses
+  `hmac.compare_digest` (constant-time).
+- **Screenshot in JPEG / WebP**: `get_view` now accepts
+  `image_format="jpeg"` (or `"webp"`). FreeCAD's `saveImage` still
+  produces PNG internally; the new `_transcode_screenshot` helper
+  uses Pillow to convert. If Pillow is not installed, the call
+  returns a clear error and the request does not crash.
+- **Payload compression for large exports**: new
+  `FreeCADConnection.export_object_bytes` returns the exported file
+  as a gzipped base64 string when the result is larger than
+  `FREECAD_MCP_GZIP_MIN` (default 64 KB). Highly compressible payloads
+  shrink by 100x+; tests assert the wire size for all-zeros input.
+
+### Tests
+- 177 → 191 (+14): TLS context construction, bad cert fallback,
+  bearer-token matching, case-insensitive header, hmac constant-time,
+  Pillow transcoding for JPEG and WebP, compression threshold.
+
 ## [0.2.0] — 2025-XX-XX
 
 ### Added

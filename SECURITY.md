@@ -58,6 +58,14 @@ XML-RPC. The trust assumptions:
 - **Thread-safe lifecycle** (`start_rpc_server` / `stop_rpc_server`):
   cannot create two concurrent servers, and `server_close()` releases
   the listening socket on shutdown.
+- **Optional TLS** (0.3.0): set `FREECAD_MCP_TLS_CERT` and
+  `FREECAD_MCP_TLS_KEY` to PEM paths; the server wraps every
+  accepted socket in TLS (TLS 1.2 minimum). Refuses to start with
+  half-configured cert/key.
+- **Optional bearer-token auth** (0.3.0): set `FREECAD_MCP_AUTH_TOKEN`
+  to a shared secret; every request must carry a matching
+  `Authorization: Bearer <token>` header. Validation is constant-time
+  (`hmac.compare_digest`). Strongly recommended whenever TLS is on.
 
 ## What is **not** in scope
 

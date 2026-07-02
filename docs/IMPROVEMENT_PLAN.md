@@ -137,13 +137,13 @@
 ### Fase 5 — Features & observabilidade (2 sprints)
 
 - [x] **P5.1** ✅ `health_check` tool
-- [ ] **P5.2** TLS opcional no XML-RPC
-- [ ] **P5.3** Autenticação via token
+- [x] **P5.2** ✅ TLS opcional no XML-RPC (0.3)
+- [x] **P5.3** ✅ Autenticação via token (0.3)
 - [x] **P5.4** ✅ Cancelamento cooperativo (P1.4)
-- [ ] **P5.5** `screenshot` em formatos diferentes
+- [x] **P5.5** ✅ `screenshot` em JPEG / WebP (0.3)
 - [x] **P5.6** ✅ `undo` / `redo` tools
 - [x] **P5.7** ✅ `save_document` + `export_object`
-- [ ] **P5.8** `multipart/streaming` para arquivos grandes
+- [x] **P5.8** ✅ `export_object_bytes` com compressão gzip (0.3 — streaming multipart XML-RPC é limitado, optamos por compressão adaptativa)
 - [ ] **P5.9** Async RPC (FreeCAD GUI thread não permite)
 
 ### Fase 6 — Documentação & release (paralelo)
@@ -163,8 +163,13 @@
 | **Fase 2 — Robustez do RPC server** | ✅ **8/8** |
 | **Fase 3 — Consistência & DX** | ✅ **8/8** |
 | **Fase 4 — Testes & CI** | ✅ **5/5** |
-| **Fase 5 — Features & observabilidade** | 🟡 **5/9** (TLS/auth/streaming/async/formatoScreenshot deixados para 0.3) |
+| **Fase 5 — Features & observabilidade** | 🟡 **7/9** (TLS + auth + screenshot formats + compression em 0.3; async deixado para 0.4) |
 | **Fase 6 — Docs & release** | ✅ **6/6** |
+
+## Releases
+
+- **0.2.0** — Fases 1+2+3+4+6. 28 commits, 177 testes, 11 tools.
+- **0.3.0** — P5.2, P5.3, P5.5, P5.8. 4 commits, 191 testes.
 
 ### Fase 6 — Documentação & release (paralelo)
 

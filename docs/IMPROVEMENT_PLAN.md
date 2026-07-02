@@ -106,58 +106,14 @@
 
 ### Fase 2 — Robustez do RPC server (1 sprint)
 
-- [ ] **P2.1** Mover `output_buffer` para **dentro** do `task()` em `execute_code`:
-  ```python
-  def task():
-      buf = io.StringIO()
-      with contextlib.redirect_stdout(buf):
-          exec(code, globals())
-      return {"success": True, "message": buf.getvalue()}
-  ```
-
-- [ ] **P2.2** `process_gui_tasks`: envolver o `try` inteiro em outro `try/finally` garantindo reschedule:
-  ```python
-  try:
-      while not rpc_request_queue.empty(): ...
-  except Exception as e:
-      FreeCAD.Console.PrintError(...)
-  finally:
-      try:
-          QtCore.QTimer.singleShot(500, process_gui_tasks)
-      except Exception:
-          pass
-  ```
-
-- [ ] **P2.3** Tornar `TIMEOUT` configurável por chamada:
-  - Adicionar parâmetro `timeout` em cada método do `FreeCADRPC`.
-  - Default sensato por operação (FEM=600, screenshot=10, create=30, others=10).
-
-- [ ] **P2.4** `get_active_screenshot` em **uma** chamada RPC:
-  - Combinar check + save num único lambda que devolve tuple `(ok, payload)` ou `None`.
-
-- [ ] **P2.5** `start_rpc_server` / `stop_rpc_server` thread-safe:
-  ```python
-  _rpc_lock = threading.RLock()
-  ```
-  aplicado em ambos.
-
-- [ ] **P2.6** `parts_library.get_parts_list` invalidar cache em `mtime` da pasta:
-  ```python
-  @cache
-  def _scan(...): ...
-  def get_parts_list():
-      if folder_mtime_changed(): _scan.cache_clear()
-      return _scan(...)
-  ```
-
-- [ ] **P2.7** `configure_logging` idempotente:
-  ```python
-  if root.handlers: return
-  ```
-  no início.
-
-- [ ] **P2.8** `_get_settings_path` com fallback:
-  - Tentar `getUserAppDataDir()`. Se inacessível, `tempfile.gettempdir()/freecad_mcp/`.
+- [x] **P2.1** ✅ `output_buffer` movido para dentro do `task()` — `chore/quick-wins` `dc596d6`
+- [x] **P2.2** ✅ `process_gui_tasks` reschedule garantido — `chore/quick-wins` `e57e638`
+- [x] **P2.3** ✅ Timeout por operação + env vars — `feat/per-call-timeout` `89d5a37`
+- [x] **P2.4** ✅ `get_active_screenshot` em uma chamada — `feat/screenshot-single-call` `2827a06`
+- [x] **P2.5** ✅ `start`/`stop` thread-safe — `fix/rpc-server-thread-safety` `5ffc9b8`
+- [ ] **P2.6** `parts_library.get_parts_list` invalidar cache em `mtime` da pasta
+- [x] **P2.7** ✅ `configure_logging` idempotente — `chore/quick-wins` `eaafae3`
+- [ ] **P2.8** `_get_settings_path` com fallback
 
 ### Fase 3 — Consistência e DX (1 sprint)
 

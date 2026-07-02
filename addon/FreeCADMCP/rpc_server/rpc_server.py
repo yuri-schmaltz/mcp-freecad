@@ -378,28 +378,37 @@ class FreeCADRPC:
         return {"success": False, "error": str(res)}
 
     def execute_code(self, code: str) -> dict[str, Any]:
-        output_buffer = io.StringIO()
+        # The output buffer MUST live inside the closure — otherwise two
+        # concurrent execute_code requests share the same StringIO and the
+        # caller receives a mix of both runs' stdout.
         def task():
+            buf = io.StringIO()
             try:
-                with contextlib.redirect_stdout(output_buffer):
+                with contextlib.redirect_stdout(buf):
                     exec(code, globals())
                 FreeCAD.Console.PrintMessage("Python code executed successfully.\n")
-                return True
+                return {"success": True, "message": buf.getvalue()}
             except Exception as e:
                 FreeCAD.Console.PrintError(
                     f"Error executing Python code: {e}\n"
                 )
-                return f"Error executing Python code: {e}\n"
+                return {"success": False, "error": f"Error executing Python code: {e}\n", "output": buf.getvalue()}
 
         rpc_request_queue.put(task)
         res = rpc_response_queue.get(timeout=self.TIMEOUT)
-        if res is True:
+        if not isinstance(res, dict):
+            # Defensive: task should always return a dict now, but tolerate
+            # older shape in case of partial upgrades.
+            return {"success": False, "error": str(res)}
+        if res.get("success"):
             return {
                 "success": True,
-                "message": "Python code execution scheduled. \nOutput: " + output_buffer.getvalue()
+                "message": "Python code execution scheduled. \nOutput: " + res.get("message", ""),
             }
-        else:
-            return {"success": False, "error": res}
+        err = res.get("error", "")
+        out = res.get("output", "")
+        msg = err + (("\nOutput: " + out) if out else "")
+        return {"success": False, "error": msg}
 
     def get_objects(self, doc_name):
         doc = FreeCAD.getDocument(doc_name)

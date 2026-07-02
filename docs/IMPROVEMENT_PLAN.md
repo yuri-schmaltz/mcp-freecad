@@ -98,35 +98,11 @@
 ### Fase 1 — Segurança & estabilidade básica (1-2 sprints)
 **Objetivo**: fechar vetores críticos e DoS.
 
-- [ ] **P1.1** Corrigir `parts_library.insert_part_from_library`:
-  ```python
-  safe = os.path.normpath(relative_path)
-  if safe.startswith("..") or os.path.isabs(safe):
-      raise ValueError("Invalid relative_path")
-  abs_path = os.path.realpath(os.path.join(parts_lib_path, safe))
-  if not abs_path.startswith(os.path.realpath(parts_lib_path) + os.sep):
-      raise ValueError("Path escapes parts_library")
-  ```
-  Adicionar teste em `tests/test_parts_library.py`.
-
-- [ ] **P1.2** Adicionar **timeout** em `FreeCADConnection`:
-  - `xmlrpc.client.ServerProxy(..., transport=TimeoutTransport(timeout=10))`
-  - `TimeoutTransport` via `xmlrpc.client.Transport` com `socket.create_connection(..., timeout=...)`.
-  - Expor `FREECAD_MCP_RPC_TIMEOUT` env var (default 10s).
-  - Testar em mock com `unittest.mock`.
-
-- [ ] **P1.3** Refatorar `check_prompt_conflict`:
-  - Substituir substring por regex com word-boundaries e normalização (`\s*` removidos).
-  - Restringir a `code` (campo que de fato é executado) e a `relative_path`.
-  - **NÃO** aplicar em `obj_name`, `doc_name`, `analysis_name` (a não ser que também sejam paths).
-  - Manter lista extensível via `FREECAD_MCP_BLOCKED_TOKENS` env.
-
-- [ ] **P1.4** Implementar **idempotência** e **deduplicação** mínima no RPC:
-  - `request_id` propagado pelo XML-RPC para correlacionar request/response.
-  - Permitir cancelar request em curso via `cancel_request(id)`.
-
-- [ ] **P1.5** Limpar `work_dir` em `run_fem_analysis`:
-  - `try/finally: shutil.rmtree(work_dir, ignore_errors=True)` (manter em sucesso se `--keep-workdir` para debug).
+- [x] **P1.1** ✅ Corrigir `parts_library.insert_part_from_library` — branch `chore/quick-wins` commit `9aadd02`
+- [x] **P1.2** ✅ Timeout no XML-RPC client — branch `chore/quick-wins` commit `6d22319`
+- [x] **P1.3** ✅ Regex no `check_prompt_conflict`, scope por tipo — branch `fix/guidelines-regex` commit `6b4b085`
+- [x] **P1.4** ✅ Idempotência + cancel via `request_id` — branch `feat/request-id-and-cancellation` commit `178e9d5`
+- [x] **P1.5** ✅ Limpar `work_dir` FEM + opt-out — branch `chore/quick-wins` commit `902d1a6`
 
 ### Fase 2 — Robustez do RPC server (1 sprint)
 

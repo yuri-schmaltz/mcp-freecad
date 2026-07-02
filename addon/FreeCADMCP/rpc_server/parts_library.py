@@ -1,5 +1,5 @@
 import os
-from functools import cache
+from typing import List, Tuple
 
 import FreeCAD
 import FreeCADGui
@@ -38,19 +38,73 @@ def insert_part_from_library(relative_path):
     FreeCADGui.ActiveDocument.mergeProject(part_path)
 
 
-@cache
-def get_parts_list() -> list[str]:
+# ---------------------------------------------------------------------------
+# Parts list with mtime-based cache invalidation
+# ---------------------------------------------------------------------------
+#
+# The previous implementation used ``functools.cache`` which never expires.
+# If the user dropped new ``.FCStd`` files into ``~/.FreeCAD/Mod/parts_library``
+# (or any subdirectory) they would be invisible until FreeCAD was restarted.
+#
+# New behaviour:
+# - Each call walks the directory (cheap on a typical parts library) and
+#   records a signature ``(latest_mtime, count)`` keyed on the path.
+# - The result is only re-cached if the signature changes, so steady-state
+#   callers (which is the common case) pay only the walk cost — same as
+#   before — but a freshly-added file is picked up on the very next call.
+# - The cache is keyed by the parts-library root path so multiple roots
+#   (e.g. during tests with a temporary directory) do not poison each other.
+# - Returning a defensive copy of the cached list prevents callers from
+#   mutating the cache in place.
+
+_parts_list_cache: dict[str, Tuple[Tuple[float, int], List[str]]] = {}
+
+
+def _safe_mtime(path: str) -> float:
+    """Return the mtime of *path* or 0 if it cannot be stat'd."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _walk_parts(parts_lib_path: str) -> Tuple[Tuple[float, int], List[str]]:
+    """Walk *parts_lib_path* and return ``((latest_mtime, count), relative_paths)``."""
+    parts: List[str] = []
+    latest = _safe_mtime(parts_lib_path)
+    for root, _dirs, files in os.walk(parts_lib_path):
+        for file in files:
+            if not file.endswith(".FCStd"):
+                continue
+            full = os.path.join(root, file)
+            fm = _safe_mtime(full)
+            if fm > latest:
+                latest = fm
+            parts.append(os.path.relpath(full, parts_lib_path))
+    parts.sort()
+    return (latest, len(parts)), parts
+
+
+def get_parts_list() -> List[str]:
+    """Return a sorted list of relative paths to ``.FCStd`` files under the parts library.
+
+    The result is cached per root path and invalidated automatically when
+    files are added, removed, or modified (detected via mtime). The
+    returned list is a defensive copy; mutating it does not poison the
+    cache.
+    """
     parts_lib_path = os.path.join(FreeCAD.getUserAppDataDir(), "Mod", "parts_library")
 
     if not os.path.exists(parts_lib_path):
         raise FileNotFoundError(f"Not found: {parts_lib_path}")
 
-    parts = []
+    signature, parts = _walk_parts(parts_lib_path)
+    cached = _parts_list_cache.get(parts_lib_path)
+    if cached is None or cached[0] != signature:
+        _parts_list_cache[parts_lib_path] = (signature, parts)
+    return list(_parts_list_cache[parts_lib_path][1])
 
-    for root, _, files in os.walk(parts_lib_path):
-        for file in files:
-            if file.endswith(".FCStd"):
-                relative_path = os.path.relpath(os.path.join(root, file), parts_lib_path)
-                parts.append(relative_path)
 
-    return parts
+def reset_parts_list_cache() -> None:
+    """Clear the parts-list cache (test / diagnostic helper)."""
+    _parts_list_cache.clear()

@@ -111,9 +111,9 @@
 - [x] **P2.3** ✅ Timeout por operação + env vars — `feat/per-call-timeout` `89d5a37`
 - [x] **P2.4** ✅ `get_active_screenshot` em uma chamada — `feat/screenshot-single-call` `2827a06`
 - [x] **P2.5** ✅ `start`/`stop` thread-safe — `fix/rpc-server-thread-safety` `5ffc9b8`
-- [ ] **P2.6** `parts_library.get_parts_list` invalidar cache em `mtime` da pasta
+- [x] **P2.6** ✅ `parts_library.get_parts_list` cache por mtime — `fix/parts-list-cache-invalidation` `8c9f138`
 - [x] **P2.7** ✅ `configure_logging` idempotente — `chore/quick-wins` `eaafae3`
-- [ ] **P2.8** `_get_settings_path` com fallback
+- [x] **P2.8** ✅ `_get_settings_path` fallback chain — `fix/settings-path-fallback` `b71a00a`
 
 ### Fase 3 — Consistência e DX (1 sprint)
 

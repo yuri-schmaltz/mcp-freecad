@@ -25,7 +25,10 @@ def test_guidelines_blocking():
     fake = FakeFreeCAD()
     # Dangerous code should be blocked
     res = execute_code_operation(fake, True, "import os; os.system('rm -rf /')")
-    assert any("Refuse to execute code" in t.text for t in res if hasattr(t, 'text'))
+    assert any(
+        ("Refusing" in t.text or "Refuse" in t.text) and "pattern" in t.text
+        for t in res if hasattr(t, 'text')
+    )
 
 
 def test_create_object_safe_decorator():

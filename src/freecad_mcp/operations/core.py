@@ -21,6 +21,7 @@ from ..utils import safe_operation
 logger = logging.getLogger("FreeCADMCPserver")
 
 
+@safe_operation
 def create_document_operation(freecad: FreeCADConnection, name: str) -> ToolResponse:
     # Check for guideline conflicts (e.g., dangerous or unquestioning prompts)
     conflict, msg = check_prompt_conflict(name)
@@ -136,6 +137,7 @@ def execute_code_operation(
     return add_screenshot_if_available(response, screenshot, only_text_feedback)
 
 
+@safe_operation
 def get_view_operation(
     freecad: FreeCADConnection,
     view_name: str,

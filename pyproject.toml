@@ -1,17 +1,31 @@
 [project]
 name = "freecad-mcp"
 version = "0.1.18"
-description = "Add your description here"
+description = "MCP server that lets LLMs drive FreeCAD via XML-RPC: create/edit CAD objects, run CalculiX FEM analyses, capture screenshots, and manage the parts library."
 readme = "README.md"
 authors = [
     { name = "neka-nat", email = "nekanat.stock@gmail.com" }
 ]
 license = { text = "MIT" }
 requires-python = ">=3.12"
+keywords = ["freecad", "mcp", "cad", "fem", "calculix", "llm", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Computer Aided Design (CAD)",
+]
 dependencies = [
     "mcp[cli]>=1.12.2",
     "validators>=0.34.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/neka-nat/freecad-mcp"
+Repository = "https://github.com/neka-nat/freecad-mcp"
+Issues = "https://github.com/neka-nat/freecad-mcp/issues"
 
 [project.scripts]
 freecad-mcp = "freecad_mcp.server:main"

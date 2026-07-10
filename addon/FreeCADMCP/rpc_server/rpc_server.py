@@ -73,18 +73,14 @@ from ._fem_workdir import keep_fem_workdir as _keep_fem_workdir
 from ._fem_workdir import safe_rmtree as _safe_rmtree
 from ._request_tracking import get_default_tracker as _get_tracker
 from ._screenshot import transcode_to_format  # noqa: F401  (re-exported as _transcode_screenshot below)
-# T1.5's can_start_remote_server / format_refusal_message are intentionally
-# NOT applied here in T3.1; they ship in a dedicated ``feat(security)`` commit
-# that keeps the security gate as a separate, reviewable change. The
-# ``_security_gate`` module is re-exported below for that follow-up work.
-from ._security_gate import can_start_remote_server, format_refusal_message  # noqa: F401  (used by the T1.5 follow-up commit)
+from ._security_gate import can_start_remote_server, format_refusal_message
 from ._settings import (
-    _get_settings_path,
     _ensure_dir,  # noqa: F401  (re-exported for back-compat with v0.3.x)
+    _get_settings_path,
     _resolve_settings_dir,  # noqa: F401  (re-exported for back-compat with v0.3.x)
     _writable_dir,  # noqa: F401  (re-exported for back-compat with v0.3.x)
     load_settings,
-    save_settings,
+    save_settings,  # noqa: F401  (re-exported for back-compat; external callers do rpc_mod.save_settings)
 )
 from .parts_library import get_parts_list, insert_part_from_library
 from .serialize import serialize_object
@@ -343,8 +339,8 @@ class Object:
 
 
 def set_object_property(
-    doc: "FreeCAD.Document",
-    obj: "FreeCAD.DocumentObject",
+    doc: FreeCAD.Document,
+    obj: FreeCAD.DocumentObject,
     properties: dict[str, Any],
     on_warning: Callable[[str, str], None] | None = None,
 ) -> list[tuple[str, str]]:
@@ -596,10 +592,8 @@ class FreeCADRPC:
                 return {"success": False, "error": f"Object '{obj_name}' not found."}
             try:
                 import os as _os
-                if fmt is None:
-                    ext = _os.path.splitext(path)[1].lstrip(".").lower()
-                    fmt = ext or "stl"
-                if fmt in ("stl",):
+                effective_fmt = fmt or _os.path.splitext(path)[1].lstrip(".").lower() or "stl"
+                if effective_fmt == "stl":
                     import MeshPart
                     mesh = MeshPart.meshFromShape(obj.Shape)
                     mesh.write(path)
@@ -607,12 +601,16 @@ class FreeCADRPC:
                     doc.exportPart = getattr(doc, "exportPart", None)
                     from FreeCAD import export as fc_export  # type: ignore
                     fc_export([obj], path)
-                return {"success": True, "path": path, "format": fmt}
+                return {"success": True, "path": path, "format": effective_fmt}
             except Exception as e:
                 return {"success": False, "error": f"{type(e).__name__}: {e}"}
         return self._tracked_call(None, task, self._timeout_for("create_object"))
 
     def get_active_view(self) -> dict[str, Any]:
+        # Local import keeps the import graph flat and avoids loading
+        # _dispatch until the user actually probes the view.
+        from ._dispatch import _get_view_size
+
         def task():
             try:
                 view = FreeCADGui.ActiveDocument.ActiveView
@@ -1109,7 +1107,7 @@ class FreeCADRPC:
         focus_object: str | None = None,
     ):
         try:
-            from ._dispatch import _flush_gui_events, _get_view_size
+            from ._dispatch import _flush_gui_events
             view = FreeCADGui.ActiveDocument.ActiveView
             if not hasattr(view, 'saveImage'):
                 return "Current view does not support screenshots"
@@ -1187,18 +1185,27 @@ def start_rpc_server(port=9875):
         remote_enabled = settings.get("remote_enabled", False)
         allowed_ips = settings.get("allowed_ips", "127.0.0.1")
 
-        if remote_enabled:
-            host = "0.0.0.0"
-        else:
-            host = "localhost"
+        host = "0.0.0.0" if remote_enabled else "localhost"
 
-        # TLS cert/key are read here and passed to the server, but the
-        # "refuse to start with remote_enabled=True" gate is applied by
-        # a separate ``feat(security)`` commit (T1.5) that ships it as
-        # a reviewable change. This keeps the T3.1 decomposition a
-        # pure code movement — no behavior changes.
+        # T1.5 — refuse to bind on a non-loopback address without both TLS
+        # and a bearer-token configured. Without these two, the RPC server
+        # (which exposes ``execute_code`` = arbitrary Python in the
+        # FreeCAD process) is reachable by anyone on the network. Loopback
+        # binds are still allowed without TLS (e.g. for local dev).
         tls_cert = os.environ.get("FREECAD_MCP_TLS_CERT")
         tls_key = os.environ.get("FREECAD_MCP_TLS_KEY")
+        if host != "localhost":
+            allowed, missing = can_start_remote_server(host, os.environ)
+            if not allowed:
+                if FreeCAD is not None and hasattr(FreeCAD, "Console"):
+                    FreeCAD.Console.PrintError(
+                        "MCP RPC: refusing to start with remote_enabled=True. "
+                        f"Missing required env vars: {', '.join(missing)}. "
+                        "Set FREECAD_MCP_TLS_CERT, FREECAD_MCP_TLS_KEY, and "
+                        "FREECAD_MCP_AUTH_TOKEN before enabling remote access. "
+                        "See SECURITY.md for the threat model.\n"
+                    )
+                return format_refusal_message(missing)
 
         rpc_server_instance = FilteredXMLRPCServer(
             (host, port),

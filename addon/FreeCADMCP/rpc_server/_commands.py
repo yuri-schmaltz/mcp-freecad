@@ -63,7 +63,36 @@ class ToggleRemoteConnectionsCommand:
         }
 
     def Activated(self, checked=0):
+        # T1.5 — refuse to enable remote access unless TLS + auth are
+        # already configured. Showing a dialog is friendlier than
+        # silently failing at start time.
+        from ._security_gate import can_start_remote_server
+
         FreeCAD = __import__("FreeCAD", fromlist=["Console"])
+        try:
+            from PySide import QtWidgets
+        except Exception:
+            QtWidgets = None  # type: ignore[assignment]
+
+        if checked:
+            allowed, missing = can_start_remote_server("0.0.0.0", __import__("os").environ)
+            if not allowed:
+                if QtWidgets is not None:
+                    QtWidgets.QMessageBox.critical(
+                        None,
+                        "Remote Connections Disabled",
+                        "Remote connections require TLS and a bearer token, otherwise "
+                        "anyone on the network can call execute_code (= arbitrary "
+                        "Python in the FreeCAD process).\n\n"
+                        f"Missing environment variables: {', '.join(missing)}.\n\n"
+                        "Set them in your environment (and the FreeCAD process "
+                        "environment) and try again. See SECURITY.md for details.",
+                    )
+                FreeCAD.Console.PrintError(
+                    f"MCP RPC: refused to enable remote connections; missing "
+                    f"env vars: {', '.join(missing)}.\n"
+                )
+                return
         settings = load_settings()
         settings["remote_enabled"] = bool(checked)
         save_settings(settings)
@@ -158,7 +187,36 @@ class ToggleAutoStartCommand:
         }
 
     def Activated(self, checked=0):
+        # T1.5 — refuse to enable remote access unless TLS + auth are
+        # already configured. Showing a dialog is friendlier than
+        # silently failing at start time.
+        from ._security_gate import can_start_remote_server
+
         FreeCAD = __import__("FreeCAD", fromlist=["Console"])
+        try:
+            from PySide import QtWidgets
+        except Exception:
+            QtWidgets = None  # type: ignore[assignment]
+
+        if checked:
+            allowed, missing = can_start_remote_server("0.0.0.0", __import__("os").environ)
+            if not allowed:
+                if QtWidgets is not None:
+                    QtWidgets.QMessageBox.critical(
+                        None,
+                        "Remote Connections Disabled",
+                        "Remote connections require TLS and a bearer token, otherwise "
+                        "anyone on the network can call execute_code (= arbitrary "
+                        "Python in the FreeCAD process).\n\n"
+                        f"Missing environment variables: {', '.join(missing)}.\n\n"
+                        "Set them in your environment (and the FreeCAD process "
+                        "environment) and try again. See SECURITY.md for details.",
+                    )
+                FreeCAD.Console.PrintError(
+                    f"MCP RPC: refused to enable remote connections; missing "
+                    f"env vars: {', '.join(missing)}.\n"
+                )
+                return
         settings = load_settings()
         settings["auto_start_rpc"] = bool(checked)
         save_settings(settings)

@@ -1,6 +1,6 @@
 [project]
 name = "freecad-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server that lets LLMs drive FreeCAD via XML-RPC: create/edit CAD objects, run CalculiX FEM analyses, capture screenshots, and manage the parts library."
 readme = "README.md"
 authors = [
@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "mcp[cli]>=1.12.2",
     "validators>=0.34.0",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.10",
+    "hypothesis>=6.0",
 ]
 
 [project.urls]

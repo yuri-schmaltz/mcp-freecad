@@ -16,17 +16,17 @@ Each test is annotated with the *invariant* it asserts, so a
 failure tells you which property was violated.
 
 The fuzzer is conservative: examples are small, ``max_examples=50``
-keeps the suite fast enough for CI, and the ``deadline=None`` lifts
-the per-example deadline because some regex evaluations on huge
-inputs would otherwise be flaky.
+keeps the suite fast enough for CI, and the default 200ms per-example
+deadline is plenty for the small regex / numeric inputs we throw at
+the SUTs (verified locally; the deadline is *not* disabled).
 
 Run with::
 
     .venv/bin/python -m pytest tests/test_fuzz_properties.py -v
 
-Or, for a longer exploratory run::
+Or, for a longer exploratory run (1000 examples per test)::
 
-    HYPOTHESIS_PROFILE=ci .venv/bin/python -m pytest tests/test_fuzz_properties.py
+    HYPOTHESIS_MAX_EXAMPLES=1000 .venv/bin/python -m pytest tests/test_fuzz_properties.py
 """
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ pytestmark = [
 ]
 
 
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
 @given(text=_short_strings)
 def test_scan_dangerous_tokens_never_crashes(text: str) -> None:
     """Invariant: scan_dangerous_tokens is total \u2014 it never raises.
@@ -140,7 +140,7 @@ def test_scan_dangerous_tokens_never_crashes(text: str) -> None:
         assert pat in registered
 
 
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
 @given(text=_unicode_strings)
 def test_scan_dangerous_tokens_unicode_safe(text: str) -> None:
     """Invariant: Unicode (including right-to-left, soft hyphens, etc.)
@@ -159,7 +159,7 @@ def test_scan_dangerous_tokens_unicode_safe(text: str) -> None:
         assert pat.search(text) is not None
 
 
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
 @given(text=_short_strings)
 def test_check_code_conflict_total_function(text: str) -> None:
     """Invariant: check_code_conflict is a total function returning
@@ -215,7 +215,7 @@ counter_required = pytest.mark.skipif(Counter is None, reason="metrics import fa
 
 
 @counter_required
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
 @given(
     n=st.integers(min_value=0, max_value=10_000),
     set_value=st.floats(min_value=0, max_value=1e9, allow_nan=False, allow_infinity=False),

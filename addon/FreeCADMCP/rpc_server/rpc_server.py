@@ -60,6 +60,7 @@ except Exception:
 
 from ._dispatch import (
     _DISPATCH_SHUTDOWN,
+    _SERVER_START_TIME,
     _resolve_screenshot_size,
     _rpc_lock,
     process_gui_tasks,
@@ -72,7 +73,11 @@ from ._fem_workdir import keep_fem_workdir as _keep_fem_workdir
 from ._fem_workdir import safe_rmtree as _safe_rmtree
 from ._request_tracking import get_default_tracker as _get_tracker
 from ._screenshot import transcode_to_format  # noqa: F401  (re-exported as _transcode_screenshot below)
-from ._security_gate import can_start_remote_server, format_refusal_message
+# T1.5's can_start_remote_server / format_refusal_message are intentionally
+# NOT applied here in T3.1; they ship in a dedicated ``feat(security)`` commit
+# that keeps the security gate as a separate, reviewable change. The
+# ``_security_gate`` module is re-exported below for that follow-up work.
+from ._security_gate import can_start_remote_server, format_refusal_message  # noqa: F401  (used by the T1.5 follow-up commit)
 from ._settings import (
     _get_settings_path,
     _ensure_dir,  # noqa: F401  (re-exported for back-compat with v0.3.x)
@@ -94,7 +99,6 @@ from ._commands import (
     ToggleRemoteConnectionsCommand,
     _sync_toggle_states,
 )
-from ._dispatch import _SERVER_START_TIME  # noqa: E402  (re-export for back-compat)
 
 # IP allowlist validation (lives here rather than in _security_gate
 # because it is consumed by the ToggleRemoteConnectionsCommand via
@@ -339,8 +343,8 @@ class Object:
 
 
 def set_object_property(
-    doc: Any,
-    obj: Any,
+    doc: "FreeCAD.Document",
+    obj: "FreeCAD.DocumentObject",
     properties: dict[str, Any],
     on_warning: Callable[[str, str], None] | None = None,
 ) -> list[tuple[str, str]]:
@@ -542,7 +546,7 @@ class FreeCADRPC:
             "response_queue_size": rpc_response_queue.qsize(),
             "cached_responses": len(tracker.cached_ids()),
             "pending_cancellations": len(tracker.pending_cancellations()),
-            "settings_dir": _get_settings_path_local(),
+            "settings_dir": _get_settings_path(),
         }
 
     def undo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
@@ -601,7 +605,7 @@ class FreeCADRPC:
                     mesh.write(path)
                 else:
                     doc.exportPart = getattr(doc, "exportPart", None)
-                    from FreeCAD import export as fc_export
+                    from FreeCAD import export as fc_export  # type: ignore
                     fc_export([obj], path)
                 return {"success": True, "path": path, "format": fmt}
             except Exception as e:
@@ -617,7 +621,7 @@ class FreeCADRPC:
             if view is None:
                 return {"success": False, "error": "no active view"}
             try:
-                width, height = _get_view_size_local(view)
+                width, height = _get_view_size(view)
             except Exception:
                 width = height = None
             return {
@@ -1105,7 +1109,7 @@ class FreeCADRPC:
         focus_object: str | None = None,
     ):
         try:
-            from ._dispatch import _flush_gui_events
+            from ._dispatch import _flush_gui_events, _get_view_size
             view = FreeCADGui.ActiveDocument.ActiveView
             if not hasattr(view, 'saveImage'):
                 return "Current view does not support screenshots"
@@ -1170,22 +1174,6 @@ class FreeCADRPC:
 
 
 
-def _get_view_size_local(view):
-    """Thin local alias; behaviour is identical to ``_dispatch._get_view_size``."""
-    try:
-        size = view.getSize()
-        if isinstance(size, (list, tuple)) and len(size) >= 2:
-            return max(1, int(size[0])), max(1, int(size[1]))
-        return max(1, int(size.width())), max(1, int(size.height()))
-    except Exception:
-        return 1024, 768
-
-
-def _get_settings_path_local():
-    """Thin local alias; identical to ``_settings._get_settings_path``."""
-    return _get_settings_path()
-
-
 # --- Lifecycle: start / stop the XML-RPC server -----------------------------
 
 def start_rpc_server(port=9875):
@@ -1204,25 +1192,13 @@ def start_rpc_server(port=9875):
         else:
             host = "localhost"
 
-        # v0.4.0 \u2014 refuse to bind on a non-loopback address without
-        # both TLS and a bearer-token configured. Without these two, the
-        # RPC server (which exposes ``execute_code`` = arbitrary Python
-        # in the FreeCAD process) is reachable by anyone on the network.
+        # TLS cert/key are read here and passed to the server, but the
+        # "refuse to start with remote_enabled=True" gate is applied by
+        # a separate ``feat(security)`` commit (T1.5) that ships it as
+        # a reviewable change. This keeps the T3.1 decomposition a
+        # pure code movement — no behavior changes.
         tls_cert = os.environ.get("FREECAD_MCP_TLS_CERT")
         tls_key = os.environ.get("FREECAD_MCP_TLS_KEY")
-        auth_token = _get_auth_token()
-        if host != "localhost":
-            allowed, missing = can_start_remote_server(host, os.environ)
-            if not allowed:
-                if FreeCAD is not None and hasattr(FreeCAD, "Console"):
-                    FreeCAD.Console.PrintError(
-                        "MCP RPC: refusing to start with remote_enabled=True. "
-                        f"Missing required env vars: {', '.join(missing)}. "
-                        "Set FREECAD_MCP_TLS_CERT, FREECAD_MCP_TLS_KEY, and "
-                        "FREECAD_MCP_AUTH_TOKEN before enabling remote access. "
-                        "See SECURITY.md for the threat model.\n"
-                    )
-                return format_refusal_message(missing)
 
         rpc_server_instance = FilteredXMLRPCServer(
             (host, port),

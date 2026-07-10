@@ -21,6 +21,11 @@ from __future__ import annotations
 import base64
 import io
 
+try:
+    import FreeCAD
+except Exception:
+    FreeCAD = None  # type: ignore[assignment]
+
 # The snippet we run on the GUI thread to probe whether the current
 # view supports ``saveImage``. Used by the client to decide whether
 # to call ``get_active_screenshot`` or fall back to a text response.
@@ -75,7 +80,15 @@ def transcode_to_format(png_bytes: bytes, target_format: str) -> str | None:
             else:
                 return None
             return base64.b64encode(buf.getvalue()).decode("utf-8")
-    except Exception:
+    except Exception as e:
+        # Surface transcode failures in the FreeCAD console so the user
+        # can tell when a screenshot is being silently dropped (e.g. on
+        # a corrupt PNG) instead of returning the raw PNG fallback.
+        if FreeCAD is not None and hasattr(FreeCAD, "Console"):
+            FreeCAD.Console.PrintError(
+                f"MCP RPC: screenshot transcode to {target_format} failed: "
+                f"{type(e).__name__}: {e}\n"
+            )
         return None
 
 

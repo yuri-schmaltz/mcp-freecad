@@ -37,25 +37,66 @@ logger = logging.getLogger("FreeCADMCPguidelines")
 # Each entry is a precompiled regex; they use \b word boundaries and allow
 # optional whitespace between identifier parts so trivial bypasses like
 # 'os . system' or 'subprocess . run' still match.
+#
+# Order matters only for documentation/log readability: matching returns
+# the first hit, so put the most specific patterns first if two could
+# overlap (e.g. `import subprocess` before a bare `subprocess` reference).
 _DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # Builtin exec/eval — require the opening '(' to reduce false positives
-    # on words like "evaluate", "execution", "executable".
+    # --- Builtin exec / eval / compile (require opening '(' to cut false
+    # positives on words like "evaluate", "execution", "executable") ---
     re.compile(r"\beval\s*\(", re.IGNORECASE),
     re.compile(r"\bexec\s*\(", re.IGNORECASE),
-    # os.system / os.popen / os.exec* family.
+    re.compile(r"\bcompile\s*\(", re.IGNORECASE),
+    re.compile(r"\bbreakpoint\s*\(", re.IGNORECASE),
+    # --- Dynamic import / attribute access (catches `__import__("os")`,
+    # `getattr(__builtins__, ...)`, and direct `__builtins__.__dict__["eval"]`
+    # style escapes) ---
+    re.compile(r"\b__import__\s*\(", re.IGNORECASE),
+    re.compile(r"\bglobals\s*\(\s*\)", re.IGNORECASE),
+    re.compile(r"\blocals\s*\(\s*\)", re.IGNORECASE),
+    re.compile(r"\bgetattr\s*\(\s*__builtins__", re.IGNORECASE),
+    re.compile(r"\b__builtins__\s*\.\s*__dict__", re.IGNORECASE),
+    re.compile(r"\b__builtins__\s*\.\s*__getattribute__", re.IGNORECASE),
+    # --- Python sandbox-escape chain (().__class__.__bases__[0].__subclasses__())
+    # and introspection helpers that are very rarely legitimate in CAD scripts.
+    re.compile(r"\.__class__\s*\.\s*__bases__", re.IGNORECASE),
+    re.compile(r"\.__class__\s*\.\s*__mro__", re.IGNORECASE),
+    re.compile(r"\.__class__\s*\.\s*__subclasses__", re.IGNORECASE),
+    re.compile(r"\bvars\s*\(\s*\)", re.IGNORECASE),
+    re.compile(r"\bdir\s*\(\s*\)", re.IGNORECASE),
+    # --- os.* family ---
     re.compile(r"\bos\s*\.\s*system\s*\(", re.IGNORECASE),
     re.compile(r"\bos\s*\.\s*popen\s*\(", re.IGNORECASE),
     re.compile(r"\bos\s*\.\s*exec[lv]p?\s*\(", re.IGNORECASE),
-    # subprocess.<call>() — the bare 'subprocess' import is also flagged
-    # because importing it without using it is rarely legitimate in this
-    # context, and any use site calls one of these functions anyway.
+    # --- subprocess.* family + bare imports ---
     re.compile(r"\bsubprocess\s*\.\s*(?:run|call|check_call|check_output|Popen)\s*\(", re.IGNORECASE),
     re.compile(r"^\s*import\s+subprocess\b", re.IGNORECASE | re.MULTILINE),
     re.compile(r"^\s*from\s+subprocess\b", re.IGNORECASE | re.MULTILINE),
-    # Shell-level rm -rf / — requires a path starting with '/' to avoid
-    # matching e.g. "rm -rf ./build" (which is a perfectly normal build
-    # cleanup operation). Flag combinations like -rf, -fr, -Rf, -Rfv all
-    # match because the flag char-class is [a-zA-Z]*.
+    # --- Network: socket, urllib, http, requests, ftplib, smtplib ---
+    re.compile(r"\bsocket\s*\.\s*(?:socket|create_connection|gethostbyname|gethostname|connect|bind|listen|accept)\s*\(", re.IGNORECASE),
+    # urllib: ``urllib.request.urlopen(``, ``urllib.urlopen(`` and
+    # ``urllib.urlretrieve(`` all open network connections.
+    re.compile(r"\burllib\s*\.\s*(?:request|urlopen|urlretrieve|URLopener|FancyURLopener)", re.IGNORECASE),
+    re.compile(r"\bhttpx\s*\.\s*(?:get|post|put|delete|patch|head|Client|AsyncClient)\s*\(", re.IGNORECASE),
+    re.compile(r"\brequests\s*\.\s*(?:get|post|put|delete|patch|head|request|Session)\s*\(", re.IGNORECASE),
+    re.compile(r"\bftplib\s*\.\s*(?:FTP|FTP_TLS)\s*\(", re.IGNORECASE),
+    re.compile(r"\bsmtplib\s*\.\s*SMTP\s*\(", re.IGNORECASE),
+    re.compile(r"^\s*import\s+(?:socket|urllib|httpx|requests|ftplib|smtplib)\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*from\s+(?:socket|urllib|httpx|requests|ftplib|smtplib)\b", re.IGNORECASE | re.MULTILINE),
+    # --- FFI / native calls: ctypes, cffi ---
+    re.compile(r"\bctypes\s*\.\s*(?:CDLL|WinDLL|cdll|windll|cdll\.LoadLibrary|windll\.LoadLibrary)\s*\(", re.IGNORECASE),
+    re.compile(r"^\s*import\s+ctypes\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*from\s+ctypes\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*import\s+cffi\b", re.IGNORECASE | re.MULTILINE),
+    # --- Serialisation that can execute: pickle, marshal, shelve, codecs ---
+    re.compile(r"\bpickle\s*\.\s*(?:load|loads|dump|dumps)\s*\(", re.IGNORECASE),
+    re.compile(r"\bmarshal\s*\.\s*(?:load|loads|dump|dumps)\s*\(", re.IGNORECASE),
+    re.compile(r"\bshelve\s*\.\s*open\s*\(", re.IGNORECASE),
+    re.compile(r"^\s*import\s+(?:pickle|marshal|shelve)\b", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*from\s+(?:pickle|marshal|shelve)\b", re.IGNORECASE | re.MULTILINE),
+    # --- Shell / OS-level destructive ops ---
+    # rm -rf / — requires a path starting with '/' to avoid matching
+    # e.g. "rm -rf ./build" (a perfectly normal build cleanup).
     re.compile(r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/", re.IGNORECASE),
     re.compile(r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+-[a-zA-Z]*\s+/", re.IGNORECASE),
     # Host shutdown / reboot.
@@ -111,6 +152,25 @@ def _match_any(
     return None
 
 
+def scan_dangerous_tokens(text: str) -> list[re.Pattern[str]]:
+    """Return **all** dangerous patterns matched in *text*, not just the first.
+
+    Useful for log analysis and audit. :func:`check_code_conflict` uses
+    the first match for the error message; this function reports the
+    full set so an operator can see how many distinct rules fired.
+    """
+    if not text:
+        return []
+    matches: list[re.Pattern[str]] = []
+    for pat in _DANGEROUS_PATTERNS:
+        if pat.search(text):
+            matches.append(pat)
+    for pat in _EXTRA_DANGEROUS:
+        if pat.search(text):
+            matches.append(pat)
+    return matches
+
+
 def check_code_conflict(code: str) -> tuple[bool, str]:
     """Check an executable string (Python code, shell snippet) for dangerous calls.
 
@@ -131,7 +191,10 @@ def check_code_conflict(code: str) -> tuple[bool, str]:
         "Provide a safer, well-scoped snippet or describe the high-level "
         "change you want; a secure implementation will be proposed."
     )
-    logger.warning("code blocked by guidelines (pattern=%r). excerpt=%r", pattern, code[:200])
+    logger.warning(
+        "code blocked by guidelines (pattern=%r, all_matches=%d). excerpt=%r",
+        pattern, len(scan_dangerous_tokens(code)), code[:200],
+    )
     return True, msg
 
 
@@ -185,4 +248,5 @@ __all__ = [
     "check_code_conflict",
     "check_prompt_conflict",
     "check_path_conflict",
+    "scan_dangerous_tokens",
 ]

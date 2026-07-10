@@ -14,7 +14,9 @@ except Exception:
 
 from ..freecad_client import FreeCADConnection
 from ..guidelines import check_code_conflict, check_path_conflict
+from ..metrics import MetricsRegistry
 from ..responses import ToolResponse, add_screenshot_if_available, json_response, text_response
+from ..schemas import validate_create_object, validate_edit_object
 from ..utils import safe_operation
 
 logger = logging.getLogger("FreeCADMCPserver")
@@ -40,14 +42,30 @@ def create_object_operation(
     analysis_name: str | None = None,
     obj_properties: dict[str, Any] | None = None,
 ) -> ToolResponse:
+    # v0.4.0 — validate parameters with Pydantic before sending to FreeCAD.
+    # Catches typos and structural errors at the MCP layer, so the LLM
+    # gets a clear error message rather than a vague ``Fault`` from the
+    # FreeCAD process.
+    try:
+        validated = validate_create_object({
+            "doc_name": doc_name,
+            "obj_type": obj_type,
+            "obj_name": obj_name,
+            "analysis_name": analysis_name,
+            "obj_properties": obj_properties,
+        })
+    except Exception as e:
+        logger.warning("create_object validation failed: %s", e)
+        return text_response(f"Invalid create_object request: {e}")
+
     # Object names are also labels; no guidelines check here.
     obj_data = {
-        "Name": obj_name,
-        "Type": obj_type,
-        "Properties": obj_properties or {},
-        "Analysis": analysis_name,
+        "Name": validated.obj_name,
+        "Type": validated.obj_type,
+        "Properties": validated.obj_properties or {},
+        "Analysis": validated.analysis_name,
     }
-    res = freecad.create_object(doc_name, obj_data)
+    res = freecad.create_object(validated.doc_name, obj_data)
     screenshot = freecad.get_active_screenshot()
 
     if res["success"]:
@@ -65,7 +83,20 @@ def edit_object_operation(
     obj_name: str,
     obj_properties: dict[str, Any],
 ) -> ToolResponse:
-    res = freecad.edit_object(doc_name, obj_name, {"Properties": obj_properties})
+    # v0.4.0 — same validation gate as create_object.
+    try:
+        validated = validate_edit_object({
+            "doc_name": doc_name,
+            "obj_name": obj_name,
+            "obj_properties": obj_properties,
+        })
+    except Exception as e:
+        logger.warning("edit_object validation failed: %s", e)
+        return text_response(f"Invalid edit_object request: {e}")
+
+    res = freecad.edit_object(
+        validated.doc_name, validated.obj_name, {"Properties": validated.obj_properties}
+    )
     screenshot = freecad.get_active_screenshot()
 
     if res["success"]:
@@ -279,5 +310,37 @@ def get_active_view_operation(freecad: FreeCADConnection) -> ToolResponse:
 
 
 @safe_operation
-def health_check_operation(freecad: FreeCADConnection) -> ToolResponse:
-    return json_response(freecad.health_check())
+def health_check_operation(
+    freecad: FreeCADConnection,
+    metrics: MetricsRegistry | None = None,
+) -> ToolResponse:
+    """Liveness/readiness probe.
+
+    Composes:
+    * The FreeCAD RPC ``health_check`` (uptime, queue sizes, settings path).
+    * The MCP circuit-breaker state and counters.
+    * The local :class:`MetricsRegistry` snapshot (tool calls,
+      validation failures, histogram counts).
+
+    The metrics block is always included; the operator dashboard or
+    log aggregator consumes it as JSON.
+    """
+    fc_status = freecad.health_check()
+    breaker = freecad.breaker_metrics()
+    # Update the registry's gauges from the live breaker state.
+    if metrics is not None:
+        state_value = {"closed": 0, "half_open": 1, "open": 2}.get(breaker["state"], -1)
+        metrics.circuit_state.set(state_value)
+        # v0.4.0 fix: the breaker's ``total_short_circuits`` is already an
+        # absolute cumulative count, so the metric must be ``set`` (not
+        # ``inc``). Using ``inc`` here would multiply the value by the
+        # number of ``health_check`` calls per scrape interval and drown
+        # any rate-based alert (e.g. ``rate(...[5m]) > 0``).
+        metrics.circuit_short_circuits.set(
+            float(breaker.get("total_short_circuits", 0))
+        )
+        metrics.uptime_seconds.set(metrics.uptime())
+        payload = {**fc_status, "circuit_breaker": breaker, "metrics": metrics.as_dict()}
+    else:
+        payload = {**fc_status, "circuit_breaker": breaker}
+    return json_response(payload)

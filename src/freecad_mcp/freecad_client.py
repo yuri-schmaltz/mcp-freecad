@@ -6,6 +6,8 @@ import os
 import xmlrpc.client
 from typing import Any
 
+from .circuit_breaker import CircuitBreaker
+
 logger = logging.getLogger("FreeCADMCPserver")
 
 # Read the default XML-RPC timeout from the environment so operators can
@@ -84,10 +86,29 @@ def _build_server_proxy(host: str, port: int, timeout: float) -> xmlrpc.client.S
 
 
 class FreeCADConnection:
-    def __init__(self, host: str = "localhost", port: int = 9875, timeout: float | None = None):
+    def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
+        # Provide a default breaker so unit tests that bypass ``__init__``
+        # (via ``__new__``) still have a working circuit breaker. Real
+        # construction paths in ``__init__`` overwrite this with a fresh
+        # instance (or the one passed in by the caller).
+        instance.breaker = CircuitBreaker()
+        return instance
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 9875,
+        timeout: float | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
+    ):
         effective_timeout = _DEFAULT_RPC_TIMEOUT if timeout is None else float(timeout)
         self.timeout = effective_timeout
         self.server = _build_server_proxy(host, port, effective_timeout)
+        # One breaker per connection, shared by all RPC methods. Operations
+        # are sequential from the client's perspective, so a per-call
+        # breaker would lose aggregate failure counts.
+        self.breaker = circuit_breaker if circuit_breaker is not None else CircuitBreaker()
 
     def disconnect(self) -> None:
         # Transport.close() clears cached HTTP connections if one was opened.
@@ -97,7 +118,7 @@ class FreeCADConnection:
             close()
 
     def ping(self) -> bool:
-        return self.server.ping()  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.ping())  # type: ignore[return-value]
 
     def cancel_request(self, request_id: str) -> dict[str, Any]:
         """Cooperatively cancel a previously-submitted request by id.
@@ -106,25 +127,25 @@ class FreeCADConnection:
         cancel only takes effect if the GUI worker has not yet started the
         task; once the handler is running it cannot be interrupted.
         """
-        return self.server.cancel_request(request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.cancel_request(request_id))  # type: ignore[return-value]
 
     def create_document(self, name: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.create_document(name, request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.create_document(name, request_id))  # type: ignore[return-value]
 
     def create_object(self, doc_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
-        return self.server.create_object(doc_name, obj_data, request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.create_object(doc_name, obj_data, request_id))  # type: ignore[return-value]
 
     def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
-        return self.server.edit_object(doc_name, obj_name, obj_data, request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.edit_object(doc_name, obj_name, obj_data, request_id))  # type: ignore[return-value]
 
     def delete_object(self, doc_name: str, obj_name: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.delete_object(doc_name, obj_name, request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.delete_object(doc_name, obj_name, request_id))  # type: ignore[return-value]
 
     def insert_part_from_library(self, relative_path: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.insert_part_from_library(relative_path, request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.insert_part_from_library(relative_path, request_id))  # type: ignore[return-value]
 
     def execute_code(self, code: str, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.execute_code(code, request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.execute_code(code, request_id))  # type: ignore[return-value]
 
     def get_active_screenshot(
         self,
@@ -135,7 +156,7 @@ class FreeCADConnection:
         image_format: str = "png",
     ) -> str | None:
         try:
-            result = self.server.execute_code(_SCREENSHOT_SUPPORT_CHECK)  # type: ignore[union-attr]
+            result = self.breaker.call(lambda: self.server.execute_code(_SCREENSHOT_SUPPORT_CHECK))  # type: ignore[union-attr]
             # XML-RPC may return any JSON-serialisable type; coerce to a
             # dict view defensively.
             result_dict = result if isinstance(result, dict) else {}
@@ -143,40 +164,42 @@ class FreeCADConnection:
                 logger.info("Screenshot unavailable in current view (likely Spreadsheet or TechDraw view)")
                 return None
 
-            return self.server.get_active_screenshot(view_name, width, height, focus_object, image_format)  # type: ignore[return-value]
+            return self.breaker.call(  # type: ignore[return-value]
+                lambda: self.server.get_active_screenshot(view_name, width, height, focus_object, image_format)
+            )
         except Exception as e:
             logger.error(f"Error getting screenshot: {e}")
             return None
 
     def get_objects(self, doc_name: str) -> list[dict[str, Any]]:
-        return self.server.get_objects(doc_name)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.get_objects(doc_name))  # type: ignore[return-value]
 
     def get_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
-        return self.server.get_object(doc_name, obj_name)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.get_object(doc_name, obj_name))  # type: ignore[return-value]
 
     def get_parts_list(self) -> list[str]:
-        return self.server.get_parts_list()  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.get_parts_list())  # type: ignore[return-value]
 
     def list_documents(self) -> list[str]:
-        return self.server.list_documents()  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.list_documents())  # type: ignore[return-value]
 
     def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600, request_id: str | None = None) -> dict[str, Any]:
-        return self.server.run_fem_analysis(doc_name, analysis_name, timeout, request_id)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.run_fem_analysis(doc_name, analysis_name, timeout, request_id))  # type: ignore[return-value]
 
     def health_check(self) -> dict[str, Any]:
-        return self.server.health_check()  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.health_check())  # type: ignore[return-value]
 
     def undo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
-        return self.server.undo(doc_name, steps)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.undo(doc_name, steps))  # type: ignore[return-value]
 
     def redo(self, doc_name: str, steps: int = 1) -> dict[str, Any]:
-        return self.server.redo(doc_name, steps)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.redo(doc_name, steps))  # type: ignore[return-value]
 
     def save_document(self, doc_name: str, path: str | None = None) -> dict[str, Any]:
-        return self.server.save_document(doc_name, path)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.save_document(doc_name, path))  # type: ignore[return-value]
 
     def export_object(self, doc_name: str, obj_name: str, path: str, fmt: str | None = None) -> dict[str, Any]:
-        return self.server.export_object(doc_name, obj_name, path, fmt)  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.export_object(doc_name, obj_name, path, fmt))  # type: ignore[return-value]
 
     def export_object_bytes(self, doc_name: str, obj_name: str, fmt: str = "stl") -> dict[str, Any]:
         """Export an object and return its bytes, optionally gzip-compressed.
@@ -195,7 +218,9 @@ class FreeCADConnection:
         with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            res = self.server.export_object(doc_name, obj_name, tmp_path, fmt)  # type: ignore[union-attr]
+            res = self.breaker.call(  # type: ignore[union-attr]
+                lambda: self.server.export_object(doc_name, obj_name, tmp_path, fmt)
+            )
             if not isinstance(res, dict) or not res.get("success"):
                 return res if isinstance(res, dict) else {"success": False, "error": "unknown"}
             with open(tmp_path, "rb") as f:
@@ -222,4 +247,13 @@ class FreeCADConnection:
         }
 
     def get_active_view(self) -> dict[str, Any]:
-        return self.server.get_active_view()  # type: ignore[return-value]
+        return self.breaker.call(lambda: self.server.get_active_view())  # type: ignore[return-value]
+
+    def breaker_metrics(self) -> dict[str, Any]:
+        """Expose the circuit breaker state for monitoring/health checks.
+
+        Operators can wire this into the ``health_check`` MCP tool
+        output; the metrics also feed the Prometheus exporter (see
+        T2.2 of ``docs/PROFESSIONALIZATION_PLAN.md``).
+        """
+        return self.breaker.metrics()

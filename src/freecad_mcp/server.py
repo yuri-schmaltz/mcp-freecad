@@ -31,10 +31,38 @@ from .operations import (
     undo_operation,
 )
 from .prompt_text import ASSET_CREATION_STRATEGY
+from .tool_policy import format_policy_for_log, resolve_tool_policy
+from .utils import text_response as _text_response_helper
+
+
+def _gabarito_enabled() -> bool:
+    """Return True if the gabarito (PT-BR directive set) should be loaded.
+
+    Default since v0.4.0 is OFF. Operators who need the previous
+    always-on behaviour set ``FREECAD_MCP_LOAD_GABARITO=1``. The legacy
+    ``FREECAD_MCP_NO_DIRECTIVE_PREFIX=1`` still wins as an override and
+    forces the gabarito OFF even if the opt-in env var is set, so
+    deployments that relied on the old knob to suppress the prefix keep
+    working unchanged.
+    """
+    if os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    return os.environ.get("FREECAD_MCP_LOAD_GABARITO", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_system_directives() -> str:
-    """Load system-level directives from docs/gabarito_ia_extracted.txt if present."""
+    """Load system-level directives from docs/gabarito_ia_extracted.txt if present.
+
+    Opt-in since v0.4.0 — see :func:`_gabarito_enabled`. When disabled,
+    returns a short English fallback so the MCP server has *something*
+    to put in ``instructions=`` but no Portuguese text leaks into
+    English-language deployments.
+    """
+    if not _gabarito_enabled():
+        return (
+            "FreeCAD integration through the Model Context Protocol. "
+            "Use the provided tools to drive FreeCAD; do not invent tool names."
+        )
     # Use repository root as base (two levels up from this file: src/freecad_mcp)
     p = Path(__file__).resolve().parents[2] / "docs" / "gabarito_ia_extracted.txt"
     try:
@@ -51,6 +79,11 @@ def configure_logging() -> None:
 
     Idempotent: re-importing or reloading the module will not stack duplicate
     handlers (which would otherwise inflate logs and confuse rotation).
+
+    v0.4.0: ``FREECAD_MCP_LOG_FORMAT=json`` switches to a JSON line
+    formatter (one record per line) suitable for ingestion by log
+    shippers (Loki, Elasticsearch, CloudWatch). The default remains
+    the human-readable text format.
     """
     root = logging.getLogger()
     if getattr(root, "_freecad_mcp_configured", False):
@@ -59,9 +92,14 @@ def configure_logging() -> None:
     log_level_name = os.getenv("FREECAD_MCP_LOGLEVEL", "INFO").upper()
     level = getattr(logging, log_level_name, logging.INFO)
 
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s", "%Y-%m-%dT%H:%M:%SZ"
-    )
+    log_format = os.getenv("FREECAD_MCP_LOG_FORMAT", "text").strip().lower()
+    if log_format == "json":
+        from .json_logging import JsonLogFormatter
+        formatter: logging.Formatter = JsonLogFormatter()
+    else:
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s", "%Y-%m-%dT%H:%M:%SZ"
+        )
 
     root.setLevel(level)
 
@@ -92,6 +130,49 @@ from .server_state import ServerState  # noqa: E402 — after configure_logging 
 logger = logging.getLogger("FreeCADMCPserver")
 
 state = ServerState()
+
+# Tool policy resolved once at import time. Operators control it via
+# ``FREECAD_MCP_DISABLED_TOOLS`` (denylist) or ``FREECAD_MCP_REQUIRED_TOOLS``
+# (whitelist); see ``src/freecad_mcp/tool_policy.py`` for the contract.
+try:
+    _tool_policy = resolve_tool_policy()
+except ValueError as _policy_err:
+    # Fail fast on misconfiguration: a typo in an env var should never
+    # silently flip the policy. We can't use logger yet at this point
+    # in some import paths, so write directly to stderr.
+    import sys
+    print(f"FATAL: {_policy_err}", file=sys.stderr)
+    raise SystemExit(2) from _policy_err
+logger.info(format_policy_for_log(_tool_policy))
+
+
+def _guard_tool(tool_name: str):
+    """Decorator that blocks the wrapped tool when *tool_name* is disabled.
+
+    Disabled tools return a ``text_response`` with an actionable error
+    so the LLM gets a clear signal that the tool is unavailable (and
+    why), rather than an opaque protocol error.
+
+    Use as the OUTER decorator — i.e. ``@_guard_tool("foo")`` above
+    ``@mcp.tool()`` — so the FastMCP layer sees the wrapped (guarded)
+    function and the original function only runs when the policy
+    allows it.
+    """
+    from functools import wraps
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if tool_name not in _tool_policy.enabled:
+                msg = (
+                    f"Tool '{tool_name}' is disabled by the server's tool policy. "
+                    "Either remove it from the request or ask the operator to "
+                    "enable it via FREECAD_MCP_DISABLED_TOOLS / FREECAD_MCP_REQUIRED_TOOLS."
+                )
+                logger.warning("blocked call to disabled tool: %s", tool_name)
+                return _text_response_helper(msg)
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 @asynccontextmanager
@@ -152,6 +233,7 @@ def get_freecad_connection() -> FreeCADConnection:
     return state.freecad_connection
 
 
+@_guard_tool("create_document")
 @mcp.tool()
 def create_document(ctx: Context, name: str) -> list[TextContent]:
     """Create a new document in FreeCAD.
@@ -173,6 +255,7 @@ def create_document(ctx: Context, name: str) -> list[TextContent]:
     return create_document_operation(get_freecad_connection(), name)
 
 
+@_guard_tool("create_object")
 @mcp.tool()
 def create_object(
     ctx: Context,
@@ -309,6 +392,7 @@ def create_object(
     )
 
 
+@_guard_tool("edit_object")
 @mcp.tool()
 def edit_object(
     ctx: Context, doc_name: str, obj_name: str, obj_properties: dict[str, Any]
@@ -333,6 +417,7 @@ def edit_object(
     )
 
 
+@_guard_tool("delete_object")
 @mcp.tool()
 def delete_object(ctx: Context, doc_name: str, obj_name: str) -> list[TextContent | ImageContent]:
     """Delete an object in FreeCAD.
@@ -352,6 +437,7 @@ def delete_object(ctx: Context, doc_name: str, obj_name: str) -> list[TextConten
     )
 
 
+@_guard_tool("execute_code")
 @mcp.tool()
 def execute_code(ctx: Context, code: str) -> list[TextContent | ImageContent]:
     """Execute arbitrary Python code in FreeCAD.
@@ -365,6 +451,7 @@ def execute_code(ctx: Context, code: str) -> list[TextContent | ImageContent]:
     return execute_code_operation(get_freecad_connection(), state.only_text_feedback, code)
 
 
+@_guard_tool("get_view")
 @mcp.tool()
 def get_view(
     ctx: Context,
@@ -400,6 +487,7 @@ def get_view(
     return get_view_operation(get_freecad_connection(), view_name, width, height, focus_object, image_format)
 
 
+@_guard_tool("insert_part_from_library")
 @mcp.tool()
 def insert_part_from_library(ctx: Context, relative_path: str) -> list[TextContent | ImageContent]:
     """Insert a part from the parts library addon.
@@ -417,6 +505,7 @@ def insert_part_from_library(ctx: Context, relative_path: str) -> list[TextConte
     )
 
 
+@_guard_tool("get_objects")
 @mcp.tool()
 def get_objects(ctx: Context, doc_name: str) -> list[TextContent | ImageContent]:
     """Get all objects in a document.
@@ -431,6 +520,7 @@ def get_objects(ctx: Context, doc_name: str) -> list[TextContent | ImageContent]
     return get_objects_operation(get_freecad_connection(), state.only_text_feedback, doc_name)
 
 
+@_guard_tool("get_object")
 @mcp.tool()
 def get_object(ctx: Context, doc_name: str, obj_name: str) -> list[TextContent | ImageContent]:
     """Get an object from a document.
@@ -451,6 +541,7 @@ def get_object(ctx: Context, doc_name: str, obj_name: str) -> list[TextContent |
     )
 
 
+@_guard_tool("get_parts_list")
 @mcp.tool()
 def get_parts_list(ctx: Context) -> list[TextContent]:
     """Get the list of parts in the parts library addon.
@@ -458,6 +549,7 @@ def get_parts_list(ctx: Context) -> list[TextContent]:
     return get_parts_list_operation(get_freecad_connection())
 
 
+@_guard_tool("list_documents")
 @mcp.tool()
 def list_documents(ctx: Context) -> list[TextContent]:
     """Get the list of open documents in FreeCAD.
@@ -468,6 +560,7 @@ def list_documents(ctx: Context) -> list[TextContent]:
     return list_documents_operation(get_freecad_connection())
 
 
+@_guard_tool("run_fem_analysis")
 @mcp.tool()
 def run_fem_analysis(
     ctx: Context,
@@ -510,6 +603,7 @@ def run_fem_analysis(
     )
 
 
+@_guard_tool("undo")
 @mcp.tool()
 def undo(ctx: Context, doc_name: str, steps: int = 1) -> list[TextContent | ImageContent]:
     """Undo one or more transactions in a FreeCAD document.
@@ -524,6 +618,7 @@ def undo(ctx: Context, doc_name: str, steps: int = 1) -> list[TextContent | Imag
     return undo_operation(get_freecad_connection(), doc_name, steps)
 
 
+@_guard_tool("redo")
 @mcp.tool()
 def redo(ctx: Context, doc_name: str, steps: int = 1) -> list[TextContent | ImageContent]:
     """Redo one or more previously-undone transactions in a FreeCAD document.
@@ -538,6 +633,7 @@ def redo(ctx: Context, doc_name: str, steps: int = 1) -> list[TextContent | Imag
     return redo_operation(get_freecad_connection(), doc_name, steps)
 
 
+@_guard_tool("save_document")
 @mcp.tool()
 def save_document(ctx: Context, doc_name: str, path: str | None = None) -> list[TextContent | ImageContent]:
     """Save a FreeCAD document to disk.
@@ -553,6 +649,7 @@ def save_document(ctx: Context, doc_name: str, path: str | None = None) -> list[
     return save_document_operation(get_freecad_connection(), doc_name, path)
 
 
+@_guard_tool("export_object")
 @mcp.tool()
 def export_object(
     ctx: Context,
@@ -577,6 +674,7 @@ def export_object(
     return export_object_operation(get_freecad_connection(), doc_name, obj_name, path, fmt)
 
 
+@_guard_tool("get_active_view")
 @mcp.tool()
 def get_active_view(ctx: Context) -> list[TextContent | ImageContent]:
     """Return metadata about the currently active FreeCAD view.
@@ -590,6 +688,7 @@ def get_active_view(ctx: Context) -> list[TextContent | ImageContent]:
     return get_active_view_operation(get_freecad_connection())
 
 
+@_guard_tool("health_check")
 @mcp.tool()
 def health_check(ctx: Context) -> list[TextContent | ImageContent]:
     """Lightweight liveness/readiness probe for monitoring.
@@ -600,7 +699,7 @@ def health_check(ctx: Context) -> list[TextContent | ImageContent]:
     Returns:
         A JSON object with diagnostic fields.
     """
-    return health_check_operation(get_freecad_connection())
+    return health_check_operation(get_freecad_connection(), state.metrics)
 
 
 @mcp.prompt()

@@ -19,24 +19,46 @@ except Exception:
 ToolResponse = list[TextContent | ImageContent]
 
 
-# Sentence required by gabarito_ia.pdf to appear at the start of responses
+# System prompt loaded from docs/gabarito_ia_extracted.txt (a Portuguese
+# directive set) is opt-in starting in v0.4.0. The previous default of
+# "always include the audit prefix" was a demo behaviour that made
+# English-language deployments ship a Portuguese sentence in every
+# tool response. Operators who need the original behaviour can opt in
+# via ``FREECAD_MCP_LOAD_GABARITO=1``.
 SYSTEM_DIRECTIVE_PREFIX = "Analisei o documento e usarei suas instruções em minhas respostas."
 
+# Backward-compat alias: previous releases used
+# ``FREECAD_MCP_NO_DIRECTIVE_PREFIX=1`` to *disable* the prefix when it
+# was on by default. We honour it as an *override* in case a deployment
+# was relying on the old knob to disable, but the canonical way is
+# now the inverted ``FREECAD_MCP_LOAD_GABARITO``.
+_LEGACY_NO_PREFIX = frozenset({"1", "true", "yes", "on"})
 
-def _directive_disabled() -> bool:
-    """Return True if the system-directive prefix should be suppressed.
 
-    Enabled by setting ``FREECAD_MCP_NO_DIRECTIVE_PREFIX=1`` in the
-    environment. Useful for downstream deployments that do not need the
-    audit prefix (saves tokens on every tool response) or for tests
-    that compare the exact text content.
+def _directive_enabled() -> bool:
+    """Return True if the system-directive prefix should be applied.
+
+    Resolution order (highest priority first):
+
+    1. ``FREECAD_MCP_NO_DIRECTIVE_PREFIX=1`` (legacy opt-out — if set,
+       the prefix is *not* applied, regardless of #2).
+    2. ``FREECAD_MCP_LOAD_GABARITO=1`` (canonical opt-in).
+    3. Default: off (no prefix).
+
+    Operators who need the previous always-on behaviour should set
+    ``FREECAD_MCP_LOAD_GABARITO=1``. The function is evaluated on every
+    call so a runtime env change is picked up without a restart.
     """
-    val = os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX", "").strip().lower()
-    return val in ("1", "true", "yes", "on")
+    # Legacy override: if the old opt-out knob is set, the prefix is off
+    # no matter what. This preserves backward compat for any deployment
+    # that was relying on it.
+    if os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX", "").strip().lower() in _LEGACY_NO_PREFIX:
+        return False
+    return os.environ.get("FREECAD_MCP_LOAD_GABARITO", "").strip().lower() in _LEGACY_NO_PREFIX
 
 
 def _ensure_prefix(message: str) -> str:
-    if _directive_disabled():
+    if not _directive_enabled():
         return message
     if message.strip().startswith(SYSTEM_DIRECTIVE_PREFIX):
         return message
@@ -59,3 +81,13 @@ def add_screenshot_if_available(
     if only_text_feedback or screenshot is None:
         return response
     return [*response, ImageContent(type="image", data=screenshot, mimeType="image/png")]
+
+
+__all__ = [
+    "ToolResponse",
+    "SYSTEM_DIRECTIVE_PREFIX",
+    "text_response",
+    "json_response",
+    "add_screenshot_if_available",
+    "_directive_enabled",
+]

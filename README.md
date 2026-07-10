@@ -1,6 +1,47 @@
 [![MseeP.ai Security Assessment Badge](https://mseep.net/pr/neka-nat-freecad-mcp-badge.png)](https://mseep.ai/app/neka-nat-freecad-mcp)
+[![Tests](https://img.shields.io/badge/tests-304_passed-brightgreen)](tests/)
+[![Coverage](https://img.shields.io/badge/coverage-63%25-yellow)](tests/)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-1.12.2%2B-purple)](https://modelcontextprotocol.io)
+[![Security: TLS%20%2B%20bearer%20auth](https://img.shields.io/badge/security-TLS%20%2B%20bearer%20auth-orange)](SECURITY.md)
 
 # FreeCAD MCP
+
+> Drive FreeCAD from any MCP-compatible LLM (Claude Desktop, Gemini, ADK, LangChain).
+> Create and edit CAD geometry, run FEM analyses with CalculiX, capture
+> screenshots, and manage the parts library — all through typed,
+> validated tool calls.
+
+**Status:** v0.4.0 — security hardened, professionalised. 304 tests, 63% coverage, ruff & mypy clean.
+**Upstream:** forked from [neka-nat/freecad-mcp](https://github.com/neka-nat/freecad-mcp) and
+maintained with a focus on production deployments.
+
+## Why this fork?
+
+The upstream is an excellent demo. This fork turns it into a **product**:
+
+* **Security-first defaults** — TLS + bearer auth required for remote access, hardened
+  `execute_code` blocklist, path-traversal protection, refusal of dangerous network binds.
+* **Production reliability** — circuit breaker in front of every RPC, exponential-backoff
+  retry, JSON-structured logging, Prometheus-style metrics.
+* **Operational control** — tool allow/deny list via env vars, Pydantic request validation,
+  extended health check, safe-by-default system prompt.
+* **Observability** — `/metrics` endpoint in Prometheus text format, latency histograms,
+  failure counters, circuit state.
+
+See [`docs/PROFESSIONALIZATION_PLAN.md`](docs/PROFESSIONALIZATION_PLAN.md) for the full
+roadmap and the rationale behind every decision.
+
+## Compatibility matrix
+
+| Component | Supported versions | Notes |
+|---|---|---|
+| Python | 3.12, 3.13 | `pyproject.toml` requires `>=3.12`; CI runs on both |
+| FreeCAD | 0.21, 1.0, 1.1 | Tested manually; CI does not run FreeCAD |
+| OS | Windows, macOS, Linux | macOS 1.0 and 1.1 paths documented |
+| MCP SDK | ≥ 1.12.2 | Required for the FastMCP tools we use |
+| LLM clients | Claude Desktop, Gemini, ADK, LangChain | Any MCP-compatible host |
 
 This repository is a FreeCAD MCP that allows you to control FreeCAD from Claude Desktop.
 
@@ -26,6 +67,44 @@ This repository is a FreeCAD MCP that allows you to control FreeCAD from Claude 
 
 This is the conversation history.
 https://claude.ai/share/7b48fd60-68ba-46fb-bb21-2fbb17399b48
+
+## When NOT to use this
+
+Be honest with yourself about the threat model before deploying:
+
+* **Don't expose the RPC port to the internet.** Even with TLS + bearer auth, the
+  `execute_code` tool runs arbitrary Python in the FreeCAD process. If your LLM host
+  is compromised, your FreeCAD machine is too. Use a local network, a VPN, or an SSH
+  tunnel.
+* **Don't run FreeCAD on your primary workstation** when the LLM is untrusted. Use a
+  container or VM. The `execute_code` blocklist is a guardrail, not a sandbox.
+* **Don't enable `execute_code` in multi-tenant deployments.** Use the
+  `FREECAD_MCP_DISABLED_TOOLS=execute_code` env var to turn it off; the structured
+  tools (`create_object`, `edit_object`, `get_view`, `run_fem_analysis`, ...) cover
+  95% of legitimate use cases.
+* **Don't load parts from a directory you don't control.** The parts library is
+  injected into the active FreeCAD document via `mergeProject`; a malicious
+  `*.FCStd` file can run macro code on open.
+
+## Production deployment checklist
+
+Before exposing this server to anything beyond a local dev environment:
+
+- [ ] **Sandbox.** Run FreeCAD in a container (Docker/Podman) or a dedicated VM.
+- [ ] **Disable `execute_code` if not needed.** `FREECAD_MCP_DISABLED_TOOLS=execute_code`.
+      Document for your users how to get it re-enabled if they need it.
+- [ ] **TLS + auth for remote access.** Set `FREECAD_MCP_TLS_CERT`, `FREECAD_MCP_TLS_KEY`,
+      and `FREECAD_MCP_AUTH_TOKEN` in the environment that runs FreeCAD. The server
+      refuses to start with `remote_enabled=true` without all three.
+- [ ] **Restrict the IP allowlist.** Edit `allowed_ips` in the FreeCAD MCP settings
+      to your LLM host's subnet. `0.0.0.0/0` is explicitly rejected.
+- [ ] **Scrape `/metrics`.** Point your Prometheus at the
+      `health_check` tool output (or wire a sidecar to expose it on `/metrics`).
+- [ ] **Structured logs.** Set `FREECAD_MCP_LOG_FORMAT=json` and ship to your
+      log aggregator.
+- [ ] **Review the system prompt.** v0.4.0 ships a short English fallback by
+      default. If you want a custom one, place it in `docs/gabarito_ia_extracted.txt`
+      and set `FREECAD_MCP_LOAD_GABARITO=1`.
 
 ## Install addon
 
@@ -221,6 +300,54 @@ This project now integrates directives from `docs/gabarito_ia.pdf` (extracted to
 | `FREECAD_MCP_NO_DIRECTIVE_PREFIX` | `false` | Drop the audit prefix from every text response. |
 | `FREECAD_MCP_MAX_INSTRUCTIONS_CHARS` | `8192` | Cap on `mcp_instructions` size with a logged warning. |
 | `FREECAD_MCP_BLOCKED_PATTERNS` | — | Comma-separated regexes to extend the code blocklist. |
+| `FREECAD_MCP_DISABLED_TOOLS` | — | Comma-separated tool names to disable. E.g. `execute_code` in production. |
+| `FREECAD_MCP_REQUIRED_TOOLS` | — | When set, ONLY the listed tools are exposed. Mutually exclusive with `DISABLED_TOOLS`. |
+| `FREECAD_MCP_LOAD_GABARITO` | `false` | Load the Portuguese `gabarito_ia.pdf` directive set as the system prompt. Off by default. |
+| `FREECAD_MCP_LOG_FORMAT` | `text` | `text` (default) or `json` for log shippers. |
+| `FREECAD_MCP_CB_THRESHOLD` | `3` | Consecutive RPC failures before the circuit breaker opens. |
+| `FREECAD_MCP_CB_RESET_S` | `60` | Seconds to wait before the breaker half-opens for a probe. |
+| `FREECAD_MCP_RETRY_MAX` | `3` | Retries with exponential backoff on transient failures while closed. |
+| `FREECAD_MCP_RETRY_BASE_S` | `0.1` | Base delay for retries; doubles each attempt. |
+| `FREECAD_MCP_TLS_CERT` | — | PEM certificate path. Required for remote RPC. |
+| `FREECAD_MCP_TLS_KEY` | — | PEM private key path. Required for remote RPC. |
+| `FREECAD_MCP_AUTH_TOKEN` | — | Shared bearer secret. Required for remote RPC. |
+
+## Monitoring
+
+The `health_check` MCP tool returns a JSON payload with two extra blocks
+since v0.4.0:
+
+* `circuit_breaker` — current state, consecutive failures, last error.
+* `metrics` — counters, histograms, gauges from the in-process registry.
+
+For Prometheus / Grafana / Loki, render the same registry as Prometheus
+text format and expose it on a port your scraper can reach:
+
+```python
+from freecad_mcp.server_state import state  # your ServerState
+from freecad_mcp.metrics import format_prometheus
+# inside whatever HTTP framework you use:
+@app.get("/metrics")
+def metrics():
+    return Response(format_prometheus(state.metrics), media_type="text/plain; version=0.0.4")
+```
+
+Scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: freecad-mcp
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['freecad-host:9876']  # wherever you exposed it
+```
+
+Useful alerts:
+
+* `freecad_mcp_circuit_state == 2` for >1 minute — FreeCAD is unreachable.
+* `rate(freecad_mcp_circuit_short_circuits_total[5m]) > 0` — breakers are opening repeatedly.
+* `histogram_quantile(0.95, rate(freecad_mcp_tool_duration_seconds_bucket[5m])) > 30`
+  — tool latency degraded.
 
 ## Running tests
 
@@ -228,7 +355,7 @@ This project now integrates directives from `docs/gabarito_ia.pdf` (extracted to
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 python -m pip install -e ".[dev]"
-pytest                      # ~175 tests, ~5s, no FreeCAD required
+pytest                      # ~304 tests, ~7s, no FreeCAD required
 pytest -m freecad           # integration tests (need a running FreeCAD)
 ```
 

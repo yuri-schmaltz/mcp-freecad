@@ -10,6 +10,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (none yet)
 
+## [0.4.0] — 2026-XX-XX
+
+**Theme: from demo to product.** Every Tier 1 (security & reliability
+blocker) and Tier 2 (production-grade) item from
+`docs/PROFESSIONALIZATION_PLAN.md` is delivered in this release.
+
+### Security (Tier 1)
+
+- **Code blocklist extended** (`src/freecad_mcp/guidelines.py`).
+  `execute_code` now also refuses `compile()`, `breakpoint()`,
+  `__import__()`, `globals()`, `locals()`, `getattr(__builtins__)`,
+  `socket.*`, `urllib.*`, `httpx.*`, `requests.*`, `ftplib.*`,
+  `smtplib.*`, `ctypes.*`, `cffi`, `pickle.*`, `marshal.*`,
+  `shelve.*`, and the corresponding `import` statements.
+  Operators can extend the list at runtime via
+  `FREECAD_MCP_BLOCKED_PATTERNS`. New
+  `scan_dangerous_tokens()` helper returns the full set of matches
+  for log analysis.
+- **Tool allow/deny policy** (`src/freecad_mcp/tool_policy.py`).
+  Operators can disable dangerous tools via
+  `FREECAD_MCP_DISABLED_TOOLS=execute_code` or run in whitelist
+  mode via `FREECAD_MCP_REQUIRED_TOOLS=...`. Disabled tools are
+  removed from the MCP tool list and answer with a clear error
+  when called by name. Misconfiguration (typos, conflicting env
+  vars) refuses to start the server.
+- **Remote-connections security gate**
+  (`addon/.../rpc_server/_security_gate.py`). The RPC server now
+  refuses to bind on a non-loopback address without
+  `FREECAD_MCP_TLS_CERT` AND `FREECAD_MCP_TLS_KEY` AND
+  `FREECAD_MCP_AUTH_TOKEN`. The `ToggleRemoteConnectionsCommand`
+  menu item shows a dialog with the same gate and refuses to
+  persist the setting if TLS+auth are not configured.
+- **Gabarito opt-in.** The Portuguese `gabarito_ia.pdf` directive
+  set is no longer loaded by default. Operators who need the
+  previous behaviour set `FREECAD_MCP_LOAD_GABARITO=1`. The
+  legacy `FREECAD_MCP_NO_DIRECTIVE_PREFIX=1` knob is honoured as
+  a force-off override for back-compat.
+
+### Reliability (Tier 1)
+
+- **Circuit breaker** (`src/freecad_mcp/circuit_breaker.py`).
+  Every RPC method in `FreeCADConnection` now flows through a
+  three-state breaker (closed → open → half_open). Transient
+  failures (connection refused, timeout, OS-level errors,
+  `xmlrpc.client.ProtocolError`) trigger exponential-backoff
+  retry; non-transient errors (`xmlrpc.client.Fault`) propagate
+  immediately. The breaker exposes its state via
+  `FreeCADConnection.breaker_metrics()` and feeds the
+  `health_check` MCP tool. Knobs:
+  `FREECAD_MCP_CB_THRESHOLD` (default 3),
+  `FREECAD_MCP_CB_RESET_S` (default 60),
+  `FREECAD_MCP_RETRY_MAX` (default 3),
+  `FREECAD_MCP_RETRY_BASE_S` (default 0.1).
+
+### Production hardening (Tier 2)
+
+- **Pydantic request validation** (`src/freecad_mcp/schemas.py`).
+  `create_object` and `edit_object` validate their parameters
+  with Pydantic models before reaching FreeCAD. Typos in field
+  names (`obj_propertie`) fail loudly; Fem:: types other than
+  `Fem::AnalysisPython` refuse to be created without an
+  `analysis_name` container.
+- **Prometheus-style metrics** (`src/freecad_mcp/metrics.py`).
+  In-process registry of counters, histograms, and gauges
+  (`freecad_mcp_tool_calls_total`,
+  `freecad_mcp_tool_duration_seconds`,
+  `freecad_mcp_validation_failures_total`,
+  `freecad_mcp_circuit_state`,
+  `freecad_mcp_circuit_short_circuits_total`,
+  `freecad_mcp_uptime_seconds`). Exposed in `health_check`
+  output as JSON and rendered in Prometheus text format via
+  `format_prometheus()`. No `prometheus_client` dependency.
+- **Structured JSON logging**
+  (`src/freecad_mcp/json_logging.py`). `FREECAD_MCP_LOG_FORMAT=json`
+  switches the formatter to a single-line JSON shape suitable for
+  log shippers. Default remains the human-readable text format.
+- **Smoke test suite** (`tests/test_smoke_imports.py`). A
+  dedicated test file asserts every public module imports
+  cleanly, catching refactor regressions at near-zero cost.
+- **Test markers hardened.** `pytest.ini` ships with explicit
+  `freecad` and `slow` markers and `-m "not freecad"` by
+  default; the `addopts` line in the original 0.3.0 release is
+  now part of the committed config.
+
+### Docs
+
+- **`docs/PROFESSIONALIZATION_PLAN.md`** — the full roadmap that
+  motivated this release: diagnosis, tier-by-tier scope, criteria
+  for "professional", and explicit non-goals.
+- **README** — new badges, compatibility matrix, "When NOT to
+  use" honesty section, "Production deployment checklist",
+  "Monitoring" section with Prometheus scrape config, expanded
+  env-var reference.
+
+### Tests
+
+- 195 → **304** tests (added: 12 tool_policy + 3 tool_guard +
+  28 guidelines + 14 schemas + 11 metrics + 8 logging +
+  9 security_gate + 13 circuit_breaker + 13 smoke imports + 3
+  responses updates). All passing in ~7s.
+- Coverage: 54% → **63%** total. Critical modules ≥ 80%
+  (`guidelines` 99%, `metrics` 98%, `tool_policy` 100%,
+  `security_gate` 100%, `circuit_breaker` 89%,
+  `operations/core` 91%).
+- `ruff check`: clean on `src/` and `tests/`.
+- `mypy`: clean on `src/` (15 source files).
+
+### Breaking changes (call out)
+
+- `FREECAD_MCP_NO_DIRECTIVE_PREFIX=1` is now the legacy
+  force-OFF knob; the new canonical opt-in is
+  `FREECAD_MCP_LOAD_GABARITO=1`. The default for both is
+  "no prefix on responses" (was: "always-on Portuguese prefix").
+- New dependency: `pydantic>=2.0`.
+- The `health_check` tool now returns a `metrics` block by
+  default; consumers that parse the response should treat the
+  shape as a superset of 0.3.0.
+- The RPC server refuses to start with `remote_enabled=true`
+  unless TLS+auth are configured; deployments that relied on the
+  "enable then realise and add TLS later" flow must set the env
+  vars first.
+
 ## [0.3.0] — 2025-XX-XX
 
 ### Added

@@ -21,7 +21,10 @@ XML-RPC. The trust assumptions:
   becomes part of the prompt. `check_code_conflict` rejects the
   most dangerous Python builtins (`eval`, `exec`, `os.system`,
   `os.popen`, `subprocess.<call>`, bare `import subprocess`, `rm -rf /`,
-  `shutdown`, `reboot`).
+  `shutdown`, `reboot`, plus since 0.4.0: `compile`, `breakpoint`,
+  `__import__`, `globals`/`locals`, `socket.*`, `urllib.*`, `httpx.*`,
+  `requests.*`, `ftplib.*`, `smtplib.*`, `ctypes.*`, `cffi`,
+  `pickle.*`, `marshal.*`, `shelve.*`).
 - **The FreeCAD host is not necessarily sandboxed.** The RPC server
   runs in the FreeCAD GUI process with full Python access. `parts_library`
   enforces strict path-traversal protection because it can open
@@ -30,11 +33,12 @@ XML-RPC. The trust assumptions:
   `localhost` by default. Remote connections are opt-in via a
   setting; the allowlist refuses `0.0.0.0/0` and `::/0` because those
   would expose the RPC server (and therefore `execute_code`) to the
-  whole internet.
-- **The XML-RPC transport is not encrypted.** If you need a remote
-  connection, put it behind a TLS-terminating reverse proxy or use an
-  SSH tunnel. (Native TLS is on the roadmap; see IMPROVEMENT_PLAN.md
-  P5.2.)
+  whole internet. **Since 0.4.0 the server refuses to start with
+  `remote_enabled=true` unless TLS and a bearer token are configured.**
+- **The XML-RPC transport supports TLS natively since 0.3.0** via
+  `FREECAD_MCP_TLS_CERT` / `FREECAD_MCP_TLS_KEY`; bearer-token
+  authentication via `FREECAD_MCP_AUTH_TOKEN` is enforced with
+  constant-time compare. A reverse proxy is no longer required.
 
 ## Safeguards in 0.2.0
 
@@ -73,12 +77,19 @@ XML-RPC. The trust assumptions:
   in-process. If you cannot trust the LLM (or the user behind it) to
   that extent, do not enable `execute_code`. There is no whitelist
   of "safe" snippets — FreeCAD's API is too broad to enumerate.
+  Set `FREECAD_MCP_DISABLED_TOOLS=execute_code` to turn it off in
+  deployments that don't need it.
 - The `open` family of operations on the XML-RPC server is not
-  authenticated. Anyone who can reach the port can call any RPC.
-  Localhost binding + IP allowlist are the only access control.
+  authenticated **at the application layer** when `remote_enabled`
+  is off (default = localhost). With `remote_enabled=true` plus
+  `FREECAD_MCP_AUTH_TOKEN` set, the server enforces
+  `Authorization: Bearer <token>` on every request; missing or
+  mismatched tokens are rejected.
 - The `mcp_instructions` system prompt is included in every MCP
   call to the LLM. Treat it as public — do not put secrets in
-  `docs/gabarito_ia_extracted.txt`.
+  `docs/gabarito_ia_extracted.txt`. As of 0.4.0 the file is
+  opt-in via `FREECAD_MCP_LOAD_GABARITO=1`; the default is a
+  short English placeholder.
 
 ## Reporting a vulnerability
 

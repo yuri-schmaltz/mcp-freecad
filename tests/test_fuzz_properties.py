@@ -30,7 +30,6 @@ Or, for a longer exploratory run::
 """
 from __future__ import annotations
 
-import string
 import sys
 from pathlib import Path
 
@@ -39,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
-from hypothesis import HealthCheck, given, settings, assume, strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 # --- Imports guarded so the test file is importable even if the addon
 # path is not in PYTHONPATH. ----------------------------------------------------

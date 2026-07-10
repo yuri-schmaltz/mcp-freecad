@@ -1,0 +1,41 @@
+name: commitlint
+
+on:
+  pull_request_target:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commitlint:
+    name: Lint commits (conventional)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install commitlint
+        run: |
+          npm init -y >/dev/null 2>&1 || true
+          npm install --no-save @commitlint/cli@^19 @commitlint/config-conventional@^19
+      - name: Run commitlint
+        env:
+          # Limit the lint to commits introduced by the PR, or to the
+          # last commit on push. On push to main we only check the
+          # last commit; the release-please job groups them anyway.
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            npx commitlint --from=origin/"${{ github.base_ref }}" --to=HEAD --verbose
+          else
+            npx commitlint --from=HEAD~1 --to=HEAD --verbose
+          fi

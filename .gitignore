@@ -32,3 +32,8 @@ logs/
 
 # OS
 Thumbs.db
+
+# Node (commitlint install dir created by the CI workflow)
+node_modules/
+package.json
+package-lock.json

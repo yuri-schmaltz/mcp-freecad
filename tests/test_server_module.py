@@ -34,29 +34,59 @@ def test_configure_logging_idempotent():
 
 
 def test_load_system_directives_fallback_when_missing():
-    """If gabarito_ia_extracted.txt is missing, the fallback is used."""
-    # Hide the docs file from the loader.
+    """If gabarito_ia_extracted.txt is missing AND gabarito is disabled,
+    the loader returns the English fallback. With gabarito enabled, the
+    missing file is a no-op and the fallback is used.
+    """
     import freecad_mcp.server as srv
     real_exists = srv.Path.exists
     real_read_text = srv.Path.read_text
     try:
         srv.Path.exists = lambda self: False  # type: ignore[assignment]
-        text = srv._load_system_directives()
-        assert text == "FreeCAD integration through the Model Context Protocol"
+        # Default: gabarito off → English fallback.
+        saved_load = os.environ.pop("FREECAD_MCP_LOAD_GABARITO", None)
+        saved_no = os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX")
+        if saved_no is not None:
+            os.environ.pop("FREECAD_MCP_NO_DIRECTIVE_PREFIX")
+        try:
+            text = srv._load_system_directives()
+            assert "FreeCAD" in text
+            assert "Model Context Protocol" in text
+        finally:
+            if saved_load is not None:
+                os.environ["FREECAD_MCP_LOAD_GABARITO"] = saved_load
+            if saved_no is not None:
+                os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved_no
     finally:
         srv.Path.exists = real_exists  # type: ignore[assignment]
         srv.Path.read_text = real_read_text  # type: ignore[assignment]
 
 
-def test_load_system_directives_reads_file():
-    """When present, the file content is returned."""
-    # We exercise the real file (no monkeypatch) — the repo ships
-    # docs/gabarito_ia_extracted.txt; this just confirms the loader
-    # reaches it.
+def test_load_system_directives_gabarito_opt_in_reads_file(monkeypatch):
+    """When FREECAD_MCP_LOAD_GABARITO=1, the file content is returned."""
+    monkeypatch.setenv("FREECAD_MCP_LOAD_GABARITO", "1")
+    monkeypatch.delenv("FREECAD_MCP_NO_DIRECTIVE_PREFIX", raising=False)
     import freecad_mcp.server as srv
     text = srv._load_system_directives()
     assert isinstance(text, str)
     assert len(text) > 0
+    # The repo ships the file with the Portuguese directive.
+    assert "DIRETRIZES" in text or "DIRETRIZ" in text or "diretrizes" in text.lower()
+
+
+def test_load_system_directives_opt_in_default_is_english(monkeypatch):
+    """When the gabarito is NOT opted in, the loader returns English text,
+    not the Portuguese file (which would otherwise leak into every LLM
+    call by default).
+    """
+    monkeypatch.delenv("FREECAD_MCP_LOAD_GABARITO", raising=False)
+    monkeypatch.delenv("FREECAD_MCP_NO_DIRECTIVE_PREFIX", raising=False)
+    import freecad_mcp.server as srv
+    text = srv._load_system_directives()
+    assert isinstance(text, str)
+    # The PT-BR gabarito contains the word "DIRETRIZES" (uppercase); the
+    # English fallback must NOT.
+    assert "DIRETRIZES" not in text
 
 
 def test_max_instructions_chars_truncates():
@@ -99,7 +129,8 @@ def test_validate_host_rejects_garbage():
 if __name__ == "__main__":
     test_configure_logging_idempotent()
     test_load_system_directives_fallback_when_missing()
-    test_load_system_directives_reads_file()
+    test_load_system_directives_gabarito_opt_in_reads_file()
+    test_load_system_directives_opt_in_default_is_english()
     test_max_instructions_chars_truncates()
     test_validate_host_accepts_ipv4_ipv6_and_hostname()
     test_validate_host_rejects_garbage()

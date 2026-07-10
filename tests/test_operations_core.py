@@ -40,6 +40,7 @@ class FakeFreeCAD:
         save_document=None,
         export_object=None,
         get_active_view=None,
+        breaker_metrics=None,
     ):
         self.calls = []
         self._handlers = {
@@ -61,6 +62,7 @@ class FakeFreeCAD:
             "save_document": save_document,
             "export_object": export_object,
             "get_active_view": get_active_view,
+            "breaker_metrics": breaker_metrics,
         }
 
     def _dispatch(self, name, *args, **kwargs):
@@ -123,6 +125,20 @@ class FakeFreeCAD:
 
     def get_active_view(self):
         return self._dispatch("get_active_view")
+
+    def breaker_metrics(self):
+        handler = self._handlers.get("breaker_metrics")
+        if handler is not None:
+            return handler()
+        # v0.4.0 default — health_check_operation now reads this.
+        return {
+            "state": "closed",
+            "consecutive_failures": 0,
+            "threshold": 3,
+            "total_calls": 0,
+            "total_failures": 0,
+            "total_short_circuits": 0,
+        }
 
 
 # ---------------------------------------------------------------------------

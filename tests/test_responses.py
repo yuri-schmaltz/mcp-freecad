@@ -1,4 +1,10 @@
-"""Unit tests for the response helpers."""
+"""Unit tests for the response helpers.
+
+Note: the ``SYSTEM_DIRECTIVE_PREFIX`` is **off by default** since v0.4.0.
+It is enabled either by ``FREECAD_MCP_LOAD_GABARITO=1`` (canonical) or
+``FREECAD_MCP_NO_DIRECTIVE_PREFIX=0``. ``FREECAD_MCP_NO_DIRECTIVE_PREFIX=1``
+remains honoured as an override (forces off even when the opt-in is set).
+"""
 import sys
 from pathlib import Path
 
@@ -12,27 +18,31 @@ from freecad_mcp.responses import (  # noqa: E402
 )
 
 
-def test_text_response_has_prefix():
+def _reload_responses():
+    import importlib
+    import freecad_mcp.responses as responses_mod
+    importlib.reload(responses_mod)
+    return responses_mod
+
+
+def test_text_response_no_prefix_by_default():
+    """Default behaviour (no env vars): no audit prefix on text responses."""
     r = text_response("hello")
     assert len(r) == 1
     assert r[0].type == "text"
-    assert r[0].text.startswith(SYSTEM_DIRECTIVE_PREFIX)
-    assert "hello" in r[0].text
+    assert r[0].text == "hello"
 
 
 def test_text_response_does_not_double_prefix():
     r = text_response("hello")
-    # Calling again would add the prefix again — verify the helper checks.
     msg = r[0].text
-    assert msg.count(SYSTEM_DIRECTIVE_PREFIX) == 1
+    assert msg.count(SYSTEM_DIRECTIVE_PREFIX) == 0
 
 
 def test_json_response_serialises_dict():
     r = json_response({"a": 1, "b": [1, 2]})
-    assert len(r) == 1
     import json as _json
-    payload = _json.loads(r[0].text[len(SYSTEM_DIRECTIVE_PREFIX):].lstrip("\n").lstrip())
-    assert payload == {"a": 1, "b": [1, 2]}
+    assert _json.loads(r[0].text) == {"a": 1, "b": [1, 2]}
 
 
 def test_json_response_handles_non_serialisable():
@@ -67,49 +77,85 @@ def test_add_screenshot_appends_image():
     assert img_part.mimeType == "image/png"
 
 
-def test_prefix_disabled_via_env():
-    """FREECAD_MCP_NO_DIRECTIVE_PREFIX=1 suppresses the audit prefix."""
-    import importlib
+def test_prefix_enabled_via_load_gabarito():
+    """FREECAD_MCP_LOAD_GABARITO=1 turns the audit prefix on."""
     import os
-    import freecad_mcp.responses as responses_mod
-    saved = os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX")
+    responses_mod = _reload_responses()
+    saved_load = os.environ.get("FREECAD_MCP_LOAD_GABARITO")
+    saved_no = os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX")
     try:
-        os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = "1"
-        importlib.reload(responses_mod)
-        r = responses_mod.text_response("hello")
-        assert r[0].text == "hello", r[0].text
-    finally:
-        if saved is None:
-            os.environ.pop("FREECAD_MCP_NO_DIRECTIVE_PREFIX", None)
-        else:
-            os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved
-        importlib.reload(responses_mod)
-
-
-def test_prefix_enabled_by_default():
-    """Without the env var, the prefix is back."""
-    import importlib
-    import os
-    import freecad_mcp.responses as responses_mod
-    saved = os.environ.pop("FREECAD_MCP_NO_DIRECTIVE_PREFIX", None)
-    try:
-        importlib.reload(responses_mod)
+        os.environ["FREECAD_MCP_LOAD_GABARITO"] = "1"
+        # Reload so the module picks up the new env at import time.
+        responses_mod = _reload_responses()
+        assert responses_mod._directive_enabled() is True
         r = responses_mod.text_response("hello")
         assert r[0].text.startswith(SYSTEM_DIRECTIVE_PREFIX)
+        assert "hello" in r[0].text
     finally:
-        if saved is not None:
-            os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved
-        importlib.reload(responses_mod)
+        if saved_load is None:
+            os.environ.pop("FREECAD_MCP_LOAD_GABARITO", None)
+        else:
+            os.environ["FREECAD_MCP_LOAD_GABARITO"] = saved_load
+        if saved_no is not None:
+            os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved_no
+        _reload_responses()
+
+
+def test_legacy_no_directive_prefix_forces_off():
+    """FREECAD_MCP_NO_DIRECTIVE_PREFIX=1 still works as an override (legacy)."""
+    import os
+    saved_load = os.environ.get("FREECAD_MCP_LOAD_GABARITO")
+    saved_no = os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX")
+    try:
+        os.environ["FREECAD_MCP_LOAD_GABARITO"] = "1"
+        os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = "1"
+        responses_mod = _reload_responses()
+        # Opt-in says "on", legacy override says "off" → off wins.
+        assert responses_mod._directive_enabled() is False
+        r = responses_mod.text_response("hello")
+        assert r[0].text == "hello"
+    finally:
+        if saved_load is None:
+            os.environ.pop("FREECAD_MCP_LOAD_GABARITO", None)
+        else:
+            os.environ["FREECAD_MCP_LOAD_GABARITO"] = saved_load
+        if saved_no is None:
+            os.environ.pop("FREECAD_MCP_NO_DIRECTIVE_PREFIX", None)
+        else:
+            os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved_no
+        _reload_responses()
+
+
+def test_load_gabarito_accepts_truthy_values():
+    """FREECAD_MCP_LOAD_GABARITO accepts 'true'/'yes'/'on' (case-insensitive)."""
+    import os
+    saved = os.environ.get("FREECAD_MCP_LOAD_GABARITO")
+    saved_no = os.environ.get("FREECAD_MCP_NO_DIRECTIVE_PREFIX")
+    try:
+        for truthy in ("1", "true", "TRUE", "yes", "on", "On"):
+            os.environ["FREECAD_MCP_LOAD_GABARITO"] = truthy
+            os.environ.pop("FREECAD_MCP_NO_DIRECTIVE_PREFIX", None)
+            responses_mod = _reload_responses()
+            assert responses_mod._directive_enabled() is True, f"failed for {truthy!r}"
+    finally:
+        if saved is None:
+            os.environ.pop("FREECAD_MCP_LOAD_GABARITO", None)
+        else:
+            os.environ["FREECAD_MCP_LOAD_GABARITO"] = saved
+        if saved_no is not None:
+            os.environ["FREECAD_MCP_NO_DIRECTIVE_PREFIX"] = saved_no
+        _reload_responses()
 
 
 if __name__ == "__main__":
-    test_text_response_has_prefix()
+    test_text_response_no_prefix_by_default()
     test_text_response_does_not_double_prefix()
     test_json_response_serialises_dict()
     test_json_response_handles_non_serialisable()
     test_add_screenshot_none_returns_base()
     test_add_screenshot_only_text_feedback_returns_base()
     test_add_screenshot_appends_image()
-    test_prefix_disabled_via_env()
-    test_prefix_enabled_by_default()
+    test_prefix_enabled_via_load_gabarito()
+    test_legacy_no_directive_prefix_forces_off()
+    test_load_gabarito_accepts_truthy_values()
     print("All response tests passed")

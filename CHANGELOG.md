@@ -10,6 +10,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (none yet)
 
+## [1.0.0] — 2026-07-15
+
+**Theme: Cut Oficial.** The project is now an independent package under
+`yuri-schmaltz/mcp-freecad` and ships under the `mcp-freecad` PyPI name.
+
+### Breaking changes
+
+- **Distribution name:** `freecad-mcp` → `mcp-freecad` (PyPI, `uvx`,
+  `pip install`). Update your `claude_desktop_config.json`
+  `mcpServers` entry from `uvx freecad-mcp` to `uvx mcp-freecad`.
+- **Console-script entry point:** `freecad-mcp` → `mcp-freecad`.
+  Update shell aliases, systemd units, or CI scripts accordingly.
+- **Configuration directory:** the addon now writes
+  `freecad_mcp_settings.json` under a directory named `mcp-freecad`
+  (e.g. `~/.config/mcp-freecad/` on Linux) instead of `freecad-mcp`.
+  Existing pre-1.0.0 installs that already have a `freecad-mcp`
+  directory will continue to have it read and written — the upgrade
+  is non-destructive.
+- **Project URL & author in `pyproject.toml`:** all `project.urls`
+  now point at `yuri-schmaltz/mcp-freecad`; the author and
+  maintainer is `Yuri Schmaltz <yuri.schmaltz@gmail.com>`.
+
+### Added
+
+- Backward-compat path: the addon still honours a pre-existing
+  `~/.config/freecad-mcp/` directory so users upgrading from 0.x keep
+  their settings.
+- New test `test_resolve_uses_legacy_dir_when_present` locks in the
+  backward-compat behaviour.
+- Explicit `[tool.hatch.build.targets.wheel] packages = ["src/freecad_mcp"]`
+  so the wheel builds cleanly with the new distribution name (the
+  Python module name `freecad_mcp` is unchanged).
+- `Project-URL` entries for Changelog and Security in
+  `pyproject.toml`.
+
+### Removed
+
+- `examples/` directory (`adk/agent.py`, `langchain/react.py`,
+  `cantilever_fem.py`, `hello_freecad.py`). The example scripts
+  required manual path edits and shipped out-of-date install
+  instructions. The README covers every supported integration.
+
+### Fixed
+
+- Hatchling build target was previously relying on the implicit
+  `src/<package_name>` heuristic; now declared explicitly so the
+  wheel always builds regardless of distribution-name changes.
+- Invalid classifier `Topic :: Scientific/Engineering :: Computer
+  Aided Design (CAD)` removed (it was rejected by current
+  packaging versions); replaced with valid alternatives.
+
+### Migration guide
+
+1. Replace `uvx freecad-mcp` with `uvx mcp-freecad` in your
+   Claude Desktop (or any MCP host) `mcpServers` config.
+2. If you pinned the package, replace `freecad-mcp>=0.4.0` with
+   `mcp-freecad>=1.0.0` in your requirements.
+3. Your existing `freecad_mcp_settings.json` (which lives in
+   `~/.config/freecad-mcp/` on Linux) keeps working — the addon
+   will keep reading and writing to that directory until you
+   delete it. New installs create `~/.config/mcp-freecad/`.
+
 ## [0.4.0] — 2026-XX-XX
 
 **Theme: from demo to product.** Every Tier 1 (security & reliability

@@ -7,8 +7,8 @@ the development setup, the tools we run, and the PR process.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/neka-nat/freecad-mcp
-cd freecad-mcp
+git clone https://github.com/yuri-schmaltz/mcp-freecad
+cd mcp-freecad
 
 # 2. Create a virtual environment
 python3 -m venv .venv
@@ -89,5 +89,5 @@ docs/IMPROVEMENT_PLAN.md        # the live audit + remediation plan
 
 ## Reporting bugs
 
-Use the [GitHub issue tracker](https://github.com/neka-nat/freecad-mcp/issues).
+Use the [GitHub issue tracker](https://github.com/yuri-schmaltz/mcp-freecad/issues).
 For security issues, see [SECURITY.md](SECURITY.md) instead.

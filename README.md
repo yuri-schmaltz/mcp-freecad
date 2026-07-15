@@ -1,9 +1,9 @@
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/neka-nat-freecad-mcp-badge.png)](https://mseep.ai/app/neka-nat-freecad-mcp)
-[![Tests](https://img.shields.io/badge/tests-304_passed-brightgreen)](tests/)
-[![Coverage](https://img.shields.io/badge/coverage-63%25-yellow)](tests/)
+[![Tests](https://img.shields.io/badge/tests-318_passed-brightgreen)](tests/)
+[![Coverage](https://img.shields.io/badge/coverage-61%25-yellow)](tests/)
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-1.12.2%2B-purple)](https://modelcontextprotocol.io)
+[![Release](https://img.shields.io/badge/release-v1.0.0-blue)](CHANGELOG.md)
 [![Security: TLS%20%2B%20bearer%20auth](https://img.shields.io/badge/security-TLS%20%2B%20bearer%20auth-orange)](SECURITY.md)
 
 # FreeCAD MCP
@@ -13,13 +13,14 @@
 > screenshots, and manage the parts library — all through typed,
 > validated tool calls.
 
-**Status:** v0.4.0 — security hardened, professionalised. 304 tests, 63% coverage, ruff & mypy clean.
-**Upstream:** forked from [neka-nat/freecad-mcp](https://github.com/neka-nat/freecad-mcp) and
-maintained with a focus on production deployments.
+**Status:** v1.0.0 — security hardened, production ready. 318 tests, 61% coverage, ruff & mypy clean.
+**Origin:** originated as a fork of [neka-nat/freecad-mcp](https://github.com/neka-nat/freecad-mcp);
+now an independent project under active development.
 
-## Why this fork?
+## Why this project?
 
-The upstream is an excellent demo. This fork turns it into a **product**:
+Started as a fork of the excellent `neka-nat/freecad-mcp` demo. This project
+turns it into a **product**:
 
 * **Security-first defaults** — TLS + bearer auth required for remote access, hardened
   `execute_code` blocklist, path-traversal protection, refusal of dangerous network binds.
@@ -102,7 +103,7 @@ Before exposing this server to anything beyond a local dev environment:
       `health_check` tool output (or wire a sidecar to expose it on `/metrics`).
 - [ ] **Structured logs.** Set `FREECAD_MCP_LOG_FORMAT=json` and ship to your
       log aggregator.
-- [ ] **Review the system prompt.** v0.4.0 ships a short English fallback by
+- [ ] **Review the system prompt.** v1.0.0 ships a short English fallback by
       default. If you want a custom one, place it in `docs/gabarito_ia_extracted.txt`
       and set `FREECAD_MCP_LOAD_GABARITO=1`.
 
@@ -121,8 +122,8 @@ FreeCAD Addon directory is
 Please put `addon/FreeCADMCP` directory to the addon directory.
 
 ```bash
-git clone https://github.com/neka-nat/freecad-mcp.git
-cd freecad-mcp
+git clone https://github.com/yuri-schmaltz/mcp-freecad.git
+cd mcp-freecad
 
 # For Linux (Ubuntu/Debian)
 cp -r addon/FreeCADMCP ~/.FreeCAD/Mod/
@@ -169,7 +170,7 @@ For user.
     "freecad": {
       "command": "uvx",
       "args": [
-        "freecad-mcp"
+        "mcp-freecad"
       ]
     }
   }
@@ -184,7 +185,7 @@ If you want to save token, you can set `only_text_feedback` to `true` and use on
     "freecad": {
       "command": "uvx",
       "args": [
-        "freecad-mcp",
+        "mcp-freecad",
         "--only-text-feedback"
       ]
     }
@@ -197,7 +198,7 @@ For developer.
 First, you need clone this repository.
 
 ```bash
-git clone https://github.com/neka-nat/freecad-mcp.git
+git clone https://github.com/yuri-schmaltz/mcp-freecad.git
 ```
 
 ```json
@@ -207,9 +208,9 @@ git clone https://github.com/neka-nat/freecad-mcp.git
       "command": "uv",
       "args": [
         "--directory",
-        "/path/to/freecad-mcp/",
+        "/path/to/mcp-freecad/",
         "run",
-        "freecad-mcp"
+        "mcp-freecad"
       ]
     }
   }
@@ -243,7 +244,7 @@ Pass the `--host` flag with the IP address or hostname of the machine running Fr
     "freecad": {
       "command": "uvx",
       "args": [
-        "freecad-mcp",
+        "mcp-freecad",
         "--host", "192.168.1.100"
       ]
     }
@@ -266,7 +267,7 @@ The `--host` value is validated on startup — it must be a valid IPv4/IPv6 addr
 * `get_object`: Get an object in a document.
 * `get_parts_list`: Get the list of parts in the [parts library](https://github.com/FreeCAD/FreeCAD-library).
 * `list_documents`: List the names of all open documents.
-* `run_fem_analysis`: Run the CalculiX solver on an existing `Fem::FemAnalysis` and return summary results (max von Mises stress, max displacement, node count, working directory). Auto-creates a `SolverCcxTools` if the analysis has none. See [`examples/cantilever_fem.py`](examples/cantilever_fem.py) for an end-to-end usage example.
+* `run_fem_analysis`: Run the CalculiX solver on an existing `Fem::FemAnalysis` and return summary results (max von Mises stress, max displacement, node count, working directory). Auto-creates a `SolverCcxTools` if the analysis has none.
 * `undo` / `redo`: Roll back or replay document transactions.
 * `save_document`: Save a document to disk (optional explicit path).
 * `export_object`: Export a single object to STL / STEP / IGES / etc.
@@ -275,8 +276,8 @@ The `--host` value is validated on startup — it must be a valid IPv4/IPv6 addr
 
 ## Contributors
 
-<a href="https://github.com/neka-nat/freecad-mcp/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=neka-nat/freecad-mcp" />
+<a href="https://github.com/yuri-schmaltz/mcp-freecad/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=yuri-schmaltz/mcp-freecad" />
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
@@ -315,7 +316,7 @@ This project now integrates directives from `docs/gabarito_ia.pdf` (extracted to
 ## Monitoring
 
 The `health_check` MCP tool returns a JSON payload with two extra blocks
-since v0.4.0:
+since v1.0.0:
 
 * `circuit_breaker` — current state, consecutive failures, last error.
 * `metrics` — counters, histograms, gauges from the in-process registry.
@@ -336,7 +337,7 @@ Scrape config:
 
 ```yaml
 scrape_configs:
-  - job_name: freecad-mcp
+  - job_name: mcp-freecad
     metrics_path: /metrics
     static_configs:
       - targets: ['freecad-host:9876']  # wherever you exposed it
@@ -355,13 +356,14 @@ Useful alerts:
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 python -m pip install -e ".[dev]"
-pytest                      # ~304 tests, ~7s, no FreeCAD required
+pytest                      # ~318 tests, ~7s, no FreeCAD required
 pytest -m freecad           # integration tests (need a running FreeCAD)
 ```
 
 CI is configured in `.github/workflows/ci.yml` to run `pytest` (with
 coverage), `ruff`, and `mypy` on every push and pull request, across
-Python 3.11 / 3.12 / 3.13.
+Python 3.12 / 3.13, on Ubuntu, macOS, and Windows. The FreeCAD addon's
+syntax is verified against Python 3.12 separately.
 
 ## Contributing & Security
 

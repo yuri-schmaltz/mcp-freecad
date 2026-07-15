@@ -1,4 +1,4 @@
-# Handoff para IA — freecad-mcp
+# Handoff para IA — mcp-freecad
 
 Objetivo
 -------
@@ -65,7 +65,7 @@ python tests\run_guidelines_tests.py
 ```powershell
 python -m freecad_mcp.server
 # ou usar console script (após instalação editável):
-freecad-mcp
+mcp-freecad
 ```
 
 Observações e pontos de atenção

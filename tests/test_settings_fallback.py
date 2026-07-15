@@ -158,8 +158,8 @@ def test_resolve_falls_back_to_home_when_freecad_unwritable():
         # primary path will fail both _ensure_dir and _writable_dir.
         _fc.getUserAppDataDir = lambda: "/proc/1/mcp_test_unwritable"
         chosen = rpc_mod._resolve_settings_dir()
-        # HOME fallback is <home>/.config/freecad-mcp (created).
-        assert chosen == os.path.join(home, ".config", "freecad-mcp")
+        # HOME fallback is <home>/.config/mcp-freecad (created).
+        assert chosen == os.path.join(home, ".config", "mcp-freecad")
         assert os.path.isdir(chosen)
     finally:
         restore()
@@ -176,7 +176,7 @@ def test_resolve_xdg_takes_priority_over_home():
     try:
         _fc.getUserAppDataDir = lambda: "/proc/1/mcp_test_unwritable"
         chosen = rpc_mod._resolve_settings_dir()
-        assert chosen == os.path.join(xdg, "freecad-mcp")
+        assert chosen == os.path.join(xdg, "mcp-freecad")
     finally:
         restore()
         import shutil
@@ -192,8 +192,8 @@ def test_resolve_falls_back_to_temp_when_nothing_writable():
     try:
         _fc.getUserAppDataDir = lambda: "/proc/1/mcp_test_unwritable"
         chosen = rpc_mod._resolve_settings_dir()
-        # Last resort is tempdir/freecad-mcp.
-        assert chosen == os.path.join(tempfile.gettempdir(), "freecad-mcp")
+        # Last resort is tempdir/mcp-freecad.
+        assert chosen == os.path.join(tempfile.gettempdir(), "mcp-freecad")
         assert os.path.isdir(chosen)
     finally:
         restore()
@@ -209,7 +209,39 @@ def test_resolve_handles_freecad_raising():
     try:
         # Should not raise; should fall back to HOME.
         chosen = rpc_mod._resolve_settings_dir()
-        assert chosen == os.path.join(home, ".config", "freecad-mcp")
+        assert chosen == os.path.join(home, ".config", "mcp-freecad")
+    finally:
+        restore()
+        import shutil
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_resolve_uses_legacy_dir_when_present():
+    """If a pre-1.0.0 ``freecad-mcp`` dir already exists, keep using it.
+
+    This is the backward-compat path for users upgrading from 0.x.
+    """
+    import sys
+
+    if sys.platform == "win32":
+        # The /proc/1 trick used by the other tests below is not portable:
+        # on Windows that path resolves to a writable location and the test
+        # does not exercise the fallback path at all. Skip on Windows rather
+        # than introduce a Windows-specific unwritable path.
+        import pytest
+        pytest.skip("uses POSIX-only /proc/1 unwritable path; see other tests' pre-existing portability issue")
+
+    rpc_mod = _load_rpc_server()
+    home = tempfile.mkdtemp(prefix="home_for_legacy_")
+    legacy = os.path.join(home, ".config", "freecad-mcp")
+    os.makedirs(legacy, exist_ok=True)
+    restore = _with_env({"HOME": home, "XDG_CONFIG_HOME": ""})
+
+    try:
+        _fc.getUserAppDataDir = lambda: "/proc/1/mcp_test_unwritable"
+        chosen = rpc_mod._resolve_settings_dir()
+        # Legacy dir is preferred only if it pre-exists.
+        assert chosen == legacy
     finally:
         restore()
         import shutil
@@ -298,6 +330,7 @@ if __name__ == "__main__":
     test_resolve_xdg_takes_priority_over_home()
     test_resolve_falls_back_to_temp_when_nothing_writable()
     test_resolve_handles_freecad_raising()
+    test_resolve_uses_legacy_dir_when_present()
     test_save_then_load_round_trip()
     test_load_returns_defaults_when_no_file()
     test_load_fills_missing_keys_with_defaults()

@@ -78,7 +78,7 @@
 | M8 | `pyproject.toml` | `description = "Add your description here"` placeholder. | PyPI/readme feios. |
 | M9 | `responses._ensure_prefix` | Adiciona prefixo a **toda** resposta, incluindo erros. Polui logs e pode ser redundante após a primeira chamada. | UX da resposta do tool fica verbosa. |
 | M10 | `mcp_instructions` | Carrega `gabarito_ia_extracted.txt` na inicialização e concatena `ASSET_CREATION_STRATEGY`. Tamanho final >2KB; entra em todas as chamadas do LLM. | Custo de tokens crescente. |
-| M11 | `examples/langchain/react.py` | Caminho `path/to/freecad-mcp` é placeholder literal — não roda sem edição manual. | Onboarding friction. |
+| M11 | `examples/langchain/react.py` | Caminho `path/to/mcp-freecad` é placeholder literal — não roda sem edição manual. | Onboarding friction. (M11 resolvido em v1.0.0: pasta `examples/` removida.) |
 | M12 | CI (`.github/workflows/ci.yml`) | Roda apenas `tests/run_guidelines_tests.py` (e esse arquivo só chama **2 dos 5** testes no `__main__`). | Cobertura efetiva ≈ 0. |
 
 ### 🔵 Baixos (cosméticos / DX)
@@ -228,7 +228,7 @@
 |---|---|---|---|
 | FreeCAD API mudar entre versões | Alta | Alto | Manter `tests/integration` em matriz; documentar versões suportadas. |
 | XML-RPC tem limite de payload | Média | Médio | Para FEM results grandes, retornar via arquivo temporário + hash. |
-| Quebrar compatibilidade com Claude Desktop config | Baixa | Alto | Manter entry point `freecad-mcp` e CLI args estáveis em minor releases. |
+| Quebrar compatibilidade com Claude Desktop config | Baixa | Alto | Manter entry point `mcp-freecad` e CLI args estáveis em minor releases. (Cut Oficial em v1.0.0: entry point mudou de `freecad-mcp` para `mcp-freecad`. Justificativa: corte de dependencia com PyPI name do upstream.) |
 | Agente LLM gerar carga excessiva | Média | Médio | Rate limiting por `request_id` + circuit breaker. |
 
 ---

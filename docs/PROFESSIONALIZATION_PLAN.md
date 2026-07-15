@@ -33,7 +33,7 @@ Nada disso requer refatoração massiva. Tudo é patch cirúrgico.
 | 10 | 🟡 Médio | DX | Sem allowlist de tools por ambiente (produção deveria poder desligar `execute_code`) | `src/freecad_mcp/server.py` |
 | 11 | 🟡 Médio | DX | Logging é texto livre — impossível de parsear em log aggregator | `src/freecad_mcp/server.py:configure_logging` |
 | 12 | 🟡 Médio | Docs | README sem badges, sem matriz FreeCAD 0.21/1.0/1.1, sem tabela de comparação | `README.md` |
-| 13 | 🟡 Médio | Docs | `examples/langchain/react.py` tem `path/to/freecad-mcp` placeholder | `examples/` |
+| 13 | 🟡 Médio | Docs | `examples/langchain/react.py` tem `path/to/mcp-freecad` placeholder | `examples/` (resolvido em v1.0.0: pasta `examples/` removida do repo) |
 | 14 | 🟢 Baixo | DX | `add_part_from_library` não checa tamanho do arquivo (DoS) | `addon/.../parts_library.py` |
 | 15 | 🟢 Baixo | DX | `get_active_screenshot` devolve base64 — desperdício de payload | `src/freecad_mcp/operations/core.py` |
 | 16 | 🟢 Baixo | DX | Sem rate limit no RPC (LLM pode martelar `get_view` com screenshots) | `addon/.../rpc_server.py` |
@@ -261,7 +261,7 @@ Para marcar v1.0:
 - [ ] Todos os itens de Tier 1 entregues e com testes
 - [ ] ≥ 80% de cobertura de código
 - [ ] CI verde em Python 3.11/3.12/3.13 com 3 OS (ubuntu/macos/windows)
-- [ ] PyPI publicado (com nome próprio, não `freecad-mcp` collidindo com upstream)
+- [x] PyPI publicado (com nome próprio, não `freecad-mcp` collidindo com upstream) — feito no Cut Oficial v1.0.0; nome PyPI agora é `mcp-freecad`.
 - [ ] Documentação publicada em readthedocs
 - [ ] Docker image oficial
 - [ ] 1 release de segurança feito e divulgado publicamente (transparência)

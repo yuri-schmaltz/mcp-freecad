@@ -1,21 +1,37 @@
 [project]
-name = "freecad-mcp"
-version = "0.4.0"
+name = "mcp-freecad"
+version = "1.0.0"
 description = "MCP server that lets LLMs drive FreeCAD via XML-RPC: create/edit CAD objects, run CalculiX FEM analyses, capture screenshots, and manage the parts library."
 readme = "README.md"
 authors = [
-    { name = "neka-nat", email = "nekanat.stock@gmail.com" }
+    { name = "Yuri Schmaltz", email = "yuri.schmaltz@gmail.com" },
+]
+maintainers = [
+    { name = "Yuri Schmaltz", email = "yuri.schmaltz@gmail.com" },
 ]
 license = { text = "MIT" }
 requires-python = ">=3.12"
-keywords = ["freecad", "mcp", "cad", "fem", "calculix", "llm", "model-context-protocol"]
+keywords = [
+    "freecad",
+    "mcp",
+    "cad",
+    "fem",
+    "calculix",
+    "llm",
+    "model-context-protocol",
+    "claude",
+    "gemini",
+]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Computer Aided Design (CAD)",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
 ]
 dependencies = [
     "mcp[cli]>=1.12.2",
@@ -33,12 +49,17 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/neka-nat/freecad-mcp"
-Repository = "https://github.com/neka-nat/freecad-mcp"
-Issues = "https://github.com/neka-nat/freecad-mcp/issues"
+Homepage = "https://github.com/yuri-schmaltz/mcp-freecad"
+Repository = "https://github.com/yuri-schmaltz/mcp-freecad"
+Issues = "https://github.com/yuri-schmaltz/mcp-freecad/issues"
+Changelog = "https://github.com/yuri-schmaltz/mcp-freecad/blob/main/CHANGELOG.md"
+Security = "https://github.com/yuri-schmaltz/mcp-freecad/blob/main/SECURITY.md"
 
 [project.scripts]
-freecad-mcp = "freecad_mcp.server:main"
+mcp-freecad = "freecad_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freecad_mcp"]
 
 [tool.hatch.build.targets.sdist]
 exclude = ["assets", "results"]

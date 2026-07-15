@@ -66,8 +66,10 @@ def _resolve_settings_dir() -> str:
     1. ``FreeCAD.getUserAppDataDir()`` — the canonical FreeCAD user dir.
        If it exists but is read-only (sandboxed installs, portable mode on
        Windows, CI), we fall back.
-    2. ``$XDG_CONFIG_HOME/freecad-mcp`` (Linux) or ``$HOME/.config/freecad-mcp``.
-    3. ``tempfile.gettempdir()/freecad-mcp`` as a last resort.
+    2. ``$XDG_CONFIG_HOME/mcp-freecad`` (Linux) or ``$HOME/.config/mcp-freecad``.
+       If a legacy ``freecad-mcp`` directory already exists there, we keep
+       using it for backward compatibility with pre-1.0.0 installs.
+    3. ``tempfile.gettempdir()/mcp-freecad`` as a last resort.
 
     Returns the first directory that exists and is writable, or the temp
     fallback even if not writable (so the caller at least has a path to
@@ -92,22 +94,40 @@ def _resolve_settings_dir() -> str:
             f"MCP settings: {primary!r} is not writable; falling back.\n"
         )
 
-    # 2. XDG / HOME config.
+    # 2. XDG / HOME config — prefer the new ``mcp-freecad`` dir, but accept
+    # the legacy ``freecad-mcp`` dir if it already exists from a pre-1.0.0
+    # install. That way users upgrading from 0.x keep their settings.
     xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    candidates: list[str] = []
-    if xdg:
-        candidates.append(os.path.join(xdg, "freecad-mcp"))
     home = os.environ.get("HOME", "").strip()
-    if home:
-        candidates.append(os.path.join(home, ".config", "freecad-mcp"))
-        candidates.append(os.path.join(home, "freecad-mcp"))
 
-    for c in candidates:
+    new_candidates: list[str] = []
+    if xdg:
+        new_candidates.append(os.path.join(xdg, "mcp-freecad"))
+    if home:
+        new_candidates.append(os.path.join(home, ".config", "mcp-freecad"))
+        new_candidates.append(os.path.join(home, "mcp-freecad"))
+
+    legacy_candidates: list[str] = []
+    if xdg:
+        legacy_candidates.append(os.path.join(xdg, "freecad-mcp"))
+    if home:
+        legacy_candidates.append(os.path.join(home, ".config", "freecad-mcp"))
+        legacy_candidates.append(os.path.join(home, "freecad-mcp"))
+
+    # Legacy dir wins only if it already pre-exists AND is writable. We
+    # check this BEFORE creating any new dir so that an upgrade path keeps
+    # the user's existing settings (and avoids auto-creating the old name
+    # on fresh installs).
+    for c in legacy_candidates:
+        if os.path.isdir(c) and _writable_dir(c):
+            return c
+
+    for c in new_candidates:
         if _ensure_dir(c) and _writable_dir(c):
             return c
 
     # 3. Temp fallback (last resort).
-    fallback = os.path.join(tempfile.gettempdir(), "freecad-mcp")
+    fallback = os.path.join(tempfile.gettempdir(), "mcp-freecad")
     _ensure_dir(fallback)
     return fallback
 
